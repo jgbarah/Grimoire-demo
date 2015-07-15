@@ -245,6 +245,9 @@ WHERE enrollments.start IS NULL OR
 GROUP BY org_id"""
 
 # Query to select repositories
+#  ORDER BY repo_id should not be needed, but there are some double
+#  entries in project_repositories table, at least in OpenStack, which
+#  cause dupped entries for repositories.
 query_repos = """SELECT repositories.id AS repo_id,
   repositories.name AS repo_name,
   projects.project_id AS project_id,
@@ -255,7 +258,7 @@ JOIN {scm_db}.project_repositories
     AND repositories.type = "git"
 JOIN {scm_db}.projects
   ON projects.project_id = project_repositories.project_id
-ORDER BY repo_id"""
+GROUP BY repo_id ORDER BY repo_id"""
 
 # Query to select repositories when there are no projects tables
 query_repos_noprojects = """SELECT repositories.id AS repo_id,
@@ -309,11 +312,14 @@ if __name__ == "__main__":
     print "Organizations: ", len(orgs)
     orgs_df = pandas.DataFrame([(0,"Unknown"),] + list(orgs),
                                columns=["org_id", "org_name"])
-
+    
     print "Repositories: ", len(repos)
     repos_df = pandas.DataFrame(list(repos),
                                 columns=["repo_id", "repo_name",
                                          "project_id", "project_name"])
+    # Capitalizing could be a good idea, but not by default.
+    # repos_df["repo_name"] = repos_df["repo_name"].str.capitalize()
+    # repos_df["project_name"] = repos_df["project_name"].str.capitalize()
 
     print "Persons: ", len(persons)
     persons_df = pandas.DataFrame(list(persons), columns=["uuid", "name", "bot"])
