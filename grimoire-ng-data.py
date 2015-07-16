@@ -21,7 +21,7 @@
 ##   Jesus M. Gonzalez-Barahona <jgb@bitergia.com>
 ##
 ## Example:
-## grimoire-ng-data.py --user jgb --passwd XXX --scmdb dic_cvsanaly_openstack_4114_sh --shdb amartin_sortinghat_openstack --output openstack-test5
+## grimoire-ng-data.py --user jgb --passwd XXX --scmdb dic_cvsanaly_openstack_4114_sh --shdb amartin_sortinghat_openstack --output openstack
 
 import argparse
 import MySQLdb
@@ -65,6 +65,11 @@ def parse_args ():
                         help = "SortingHat database")
     parser.add_argument("--output", default = "",
                         help = "Output directory")
+    parser.add_argument("--verbose", action = 'store_true',
+                        help = "Be verbose")
+    parser.add_argument("--allbranches", action = 'store_true',
+                        help = "Produce data with commits in all branches " + \
+                        "(default, only master")
     args = parser.parse_args()
     return args
 
@@ -172,9 +177,10 @@ class Database:
         self.scmdb = scmdb
         self.shdb = shdb
         self.db, self.cursor = self._connect()
-        
-## Query to select persons
-query_persons = """SELECT uidentities.uuid AS uuid,
+
+def query_persons (allbranches, verbose):
+    """ Execute query to select persons."""
+    sql = """SELECT uidentities.uuid AS uuid,
   profiles.name AS name,
   profiles.is_bot AS bot
 FROM {scm_db}.scmlog
@@ -186,13 +192,20 @@ FROM {scm_db}.scmlog
     ON uidentities.uuid = profiles.uuid
   JOIN {scm_db}.actions
     ON scmlog.id = actions.commit_id
-  JOIN {scm_db}.branches
+"""
+    if not allbranches:
+        sql = sql + """JOIN {scm_db}.branches
     ON branches.id = actions.branch_id 
 WHERE branches.name IN ("master")
-GROUP BY uidentities.uuid"""
+"""
+    sql = sql + "GROUP BY uidentities.uuid"
+    persons = db.execute(sql, verbose)
+    return persons
 
-# Query to select commits
-query_commits = """SELECT scmlog.id AS id, 
+def query_commits (allbranches, verbose):
+    """Execute query to select commits."""
+
+    sql = """SELECT scmlog.id AS id, 
   scmlog.date AS date,
   uidentities.uuid AS person_id,
   profiles.name AS name,
@@ -217,12 +230,19 @@ FROM {scm_db}.scmlog
   JOIN {scm_db}.actions
     ON scmlog.id = actions.commit_id
   JOIN {scm_db}.branches
-    ON branches.id = actions.branch_id 
-WHERE branches.name IN ("master") AND
-  (enrollments.start IS NULL OR
+    ON branches.id = actions.branch_id
+"""
+    if allbranches:
+        sql = sql + "WHERE "
+    else:
+        sql = sql + 'WHERE branches.name IN ("master") AND '
+    sql = sql + \
+"""        (enrollments.start IS NULL OR
     (scmlog.date > enrollments.start AND scmlog.date < enrollments.end))
 GROUP BY scmlog.rev
 """
+    commits = db.execute(sql, verbose)
+    return commits
 
 # Query to select organizations
 query_orgs = """SELECT enrollments.organization_id AS org_id,
@@ -275,22 +295,25 @@ if __name__ == "__main__":
     
     args = parse_args()
 
+    if args.allbranches:
+        print "Analyzing all git branches."
+    else:
+        print "Analyzing only git master branch."
     db = Database (user = args.user, passwd = args.passwd,
                    host = args.host, port = args.port,
                    scmdb = args.scmdb, shdb = args.shdb)
 
     print "Querying for persons"
-    persons = db.execute(query_persons)
-    print "Querying for commits"
-    commits = db.execute(query_commits)
+    persons = query_persons (args.allbranches, args.verbose)
     print "Querying for organizations"
-    orgs = db.execute(query_orgs)
-
+    orgs = db.execute(query_orgs, args.verbose)
+    print "Querying for commits"
+    commits = query_commits (args.allbranches, args.verbose)
     # Produce repos data, with or without projects, depending
     # on the availability of the projects table
     print "Querying for repositories"
     try:
-        check = db.execute("SELECT 1 FROM {scm_db}.projects LIMIT 1")
+        check = db.execute("SELECT 1 FROM {scm_db}.projects LIMIT 1", args.verbose)
         projects_exist = True
     except _mysql_exceptions.ProgrammingError, e:
         if e[0] == 1146:
@@ -298,11 +321,12 @@ if __name__ == "__main__":
         else:
             raise
     if projects_exist:
-        repos = db.execute(query_repos)
+        repos = db.execute(query_repos, args.verbose)
     else:
         print "No projects tables, using just one project"
-        repos = db.execute(query_repos_noprojects)
+        repos = db.execute(query_repos_noprojects, args.verbose)
 
+    # Produce commits data
     print "Commits: ", len(commits)
     commits_df = pandas.DataFrame(list(commits), columns=["id", "date", "author_uuid", "name", "org_id", "repo_id", "message", "hash", "tz", "tz_orig", "org_name"])
     commits_df["org_id"].fillna(0, inplace=True)
