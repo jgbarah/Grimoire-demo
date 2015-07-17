@@ -264,7 +264,6 @@ WHERE enrollments.start IS NULL OR
   (scmlog.date > enrollments.start AND scmlog.date < enrollments.end)
 GROUP BY org_id"""
 
-# Query to select repositories
 #  ORDER BY repo_id should not be needed, but there are some double
 #  entries in project_repositories table, at least in OpenStack, which
 #  cause dupped entries for repositories.
@@ -273,18 +272,18 @@ query_repos = """SELECT repositories.id AS repo_id,
   projects.project_id AS project_id,
   projects.id AS project
 FROM {scm_db}.repositories
-JOIN {scm_db}.project_repositories
+LEFT JOIN {scm_db}.project_repositories
   ON repositories.uri = project_repositories.repository_name
     AND repositories.type = "git"
-JOIN {scm_db}.projects
+LEFT JOIN {scm_db}.projects
   ON projects.project_id = project_repositories.project_id
 GROUP BY repo_id ORDER BY repo_id"""
 
 # Query to select repositories when there are no projects tables
 query_repos_noprojects = """SELECT repositories.id AS repo_id,
   repositories.name AS repo_name,
-  1 AS project_id,
-  "All" AS project
+  0 AS project_id,
+  "No project" AS project
 FROM {scm_db}.repositories
 ORDER BY repo_id"""
 
@@ -341,6 +340,9 @@ if __name__ == "__main__":
     repos_df = pandas.DataFrame(list(repos),
                                 columns=["repo_id", "repo_name",
                                          "project_id", "project_name"])
+    repos_df["project_id"].fillna(0, inplace=True)
+    repos_df["project_name"].fillna("No project", inplace=True)
+    
     # Capitalizing could be a good idea, but not by default.
     # repos_df["repo_name"] = repos_df["repo_name"].str.capitalize()
     # repos_df["project_name"] = repos_df["project_name"].str.capitalize()
