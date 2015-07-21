@@ -70,6 +70,10 @@ def parse_args ():
     parser.add_argument("--allbranches", action = 'store_true',
                         help = "Produce data with commits in all branches " + \
                         "(default, only master")
+    parser.add_argument("--since",
+                        help = "Consider only commits since specified date " + \
+                        "(YYYY-MM-DD format)")
+    
     args = parser.parse_args()
     return args
 
@@ -178,7 +182,7 @@ class Database:
         self.shdb = shdb
         self.db, self.cursor = self._connect()
 
-def query_persons (allbranches, verbose):
+def query_persons (allbranches, since, verbose):
     """ Execute query to select persons."""
     sql = """SELECT uidentities.uuid AS uuid,
   profiles.name AS name,
@@ -198,6 +202,10 @@ FROM {scm_db}.scmlog
     ON branches.id = actions.branch_id 
 WHERE branches.name IN ("master")
 """
+        if since:
+            sql = sql + 'AND scmlog.author_date >= "' + since + '" '
+    else:
+        sql = sql + 'WHERE scmlog.author_date >= "' + since + '" '
     sql = sql + "GROUP BY uidentities.uuid"
     persons = db.execute(sql, verbose)
     return persons
@@ -298,12 +306,16 @@ if __name__ == "__main__":
         print "Analyzing all git branches."
     else:
         print "Analyzing only git master branch."
+    if args.since:
+        print "Analyzing since: " + args.since + "."
+    else:
+        print "Analyzing since the first commit."
     db = Database (user = args.user, passwd = args.passwd,
                    host = args.host, port = args.port,
                    scmdb = args.scmdb, shdb = args.shdb)
 
     print "Querying for persons"
-    persons = query_persons (args.allbranches, args.verbose)
+    persons = query_persons (args.allbranches, args.since, args.verbose)
     print "Querying for organizations"
     orgs = db.execute(query_orgs, args.verbose)
     print "Querying for commits"
