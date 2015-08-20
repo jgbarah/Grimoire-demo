@@ -69,10 +69,14 @@ def parse_args ():
                         help = "Be verbose")
     parser.add_argument("--allbranches", action = 'store_true',
                         help = "Produce data with commits in all branches " + \
-                        "(default, only master")
+                        "(default, only master)")
     parser.add_argument("--since",
                         help = "Consider only commits since specified date " + \
                         "(YYYY-MM-DD format)")
+    parser.add_argument("--elasticsearch", nargs="?",
+                        const = "http://localhost:9200/scm/commits/",
+                        help = "Feed commits to elasticsearch, in given url " + \
+                        "(default, http://localhost:9200/scm/commits/)")
     
     args = parser.parse_args()
     return args
@@ -82,8 +86,8 @@ def json_serial(obj):
     """JSON serializer for objects not serializable by default json code"""
         
     if isinstance(obj, datetime):
-#        serial = obj.isoformat()
-        serial = (obj - datetime(1970,1,1)).total_seconds()
+        serial = obj.isoformat()
+#        serial = int((obj - datetime(1970,1,1)).total_seconds())
         return serial
     raise TypeError ("Type not serializable")
 
@@ -383,4 +387,20 @@ if __name__ == "__main__":
     report[prefix + 'repos.json'] = repos_df
     report[prefix + 'persons.json'] = persons_df
     create_report (report_files = report, destdir = './')
+
+    if args.elasticsearch:
+        import urllib2
+        print "Feeding data to elasticsearch" + args.elasticsearch
+        opener = urllib2.build_opener(urllib2.HTTPHandler)
+        for index, row in commits_df.iterrows():
+            json_dict = OrderedDict(row)
+            data_json = json_dumps(json_dict, compact = True)
+            # print index,
+        url = args.elasticsearch + str(json_dict["id"])
+        request = urllib2.Request(url, data=data_json)
+        request.get_method = lambda: 'PUT'
+        response = opener.open(request)
+        # print response.read()
+
+
 
