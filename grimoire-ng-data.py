@@ -86,8 +86,8 @@ def json_serial(obj):
     """JSON serializer for objects not serializable by default json code"""
         
     if isinstance(obj, datetime):
-        serial = obj.isoformat()
-#        serial = int((obj - datetime(1970,1,1)).total_seconds())
+#        serial = obj.isoformat()
+        serial = int((obj - datetime(1970,1,1)).total_seconds())
         return serial
     raise TypeError ("Type not serializable")
 
@@ -214,7 +214,7 @@ WHERE branches.name IN ("master")
     persons = db.execute(sql, verbose)
     return persons
 
-def query_commits (allbranches, verbose):
+def query_commits (allbranches, since, verbose):
     """Execute query to select commits."""
 
     sql = """SELECT scmlog.id AS id, 
@@ -248,6 +248,8 @@ FROM {scm_db}.scmlog
         sql = sql + "WHERE "
     else:
         sql = sql + 'WHERE branches.name IN ("master") AND '
+    if since:
+        sql = sql + 'scmlog.author_date >= "' + since + '" AND '
     sql = sql + \
 """        (enrollments.start IS NULL OR
     (scmlog.date > enrollments.start AND scmlog.date < enrollments.end))
@@ -323,7 +325,7 @@ if __name__ == "__main__":
     print "Querying for organizations"
     orgs = db.execute(query_orgs, args.verbose)
     print "Querying for commits"
-    commits = query_commits (args.allbranches, args.verbose)
+    commits = query_commits (args.allbranches, args.since, args.verbose)
     # Produce repos data, with or without projects, depending
     # on the availability of the projects table
     print "Querying for repositories"
@@ -390,17 +392,17 @@ if __name__ == "__main__":
 
     if args.elasticsearch:
         import urllib2
-        print "Feeding data to elasticsearch" + args.elasticsearch
+        print "Feeding data to elasticsearch at " + args.elasticsearch
         opener = urllib2.build_opener(urllib2.HTTPHandler)
         for index, row in commits_df.iterrows():
             json_dict = OrderedDict(row)
             data_json = json_dumps(json_dict, compact = True)
             # print index,
-        url = args.elasticsearch + str(json_dict["id"])
-        request = urllib2.Request(url, data=data_json)
-        request.get_method = lambda: 'PUT'
-        response = opener.open(request)
-        # print response.read()
+            url = args.elasticsearch + str(json_dict["id"])
+            request = urllib2.Request(url, data=data_json)
+            request.get_method = lambda: 'PUT'
+            response = opener.open(request)
+            # print response.read()
 
 
 
