@@ -201,15 +201,18 @@ FROM {scm_db}.scmlog
   JOIN {scm_db}.actions
     ON scmlog.id = actions.commit_id
 """
+    where = False
     if not allbranches:
         sql = sql + """JOIN {scm_db}.branches
     ON branches.id = actions.branch_id 
 WHERE branches.name IN ("master")
 """
-        if since:
+        where = True
+    if since:
+        if where:
             sql = sql + 'AND scmlog.author_date >= "' + since + '" '
-    else:
-        sql = sql + 'WHERE scmlog.author_date >= "' + since + '" '
+        else:
+            sql = sql + 'WHERE scmlog.author_date >= "' + since + '" '
     sql = sql + "GROUP BY uidentities.uuid"
     persons = db.execute(sql, verbose)
     return persons
