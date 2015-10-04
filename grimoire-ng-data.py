@@ -65,6 +65,8 @@ def parse_args ():
                         help = "SortingHat database")
     parser.add_argument("--output", default = "",
                         help = "Output directory")
+    parser.add_argument("--dateformat",
+                        help = "Date format ('utime' or 'iso')")
     parser.add_argument("--verbose", action = 'store_true',
                         help = "Be verbose")
     parser.add_argument("--allbranches", action = 'store_true',
@@ -82,36 +84,86 @@ def parse_args ():
     return args
 
 
-def json_serial(obj):
-    """JSON serializer for objects not serializable by default json code"""
-        
-    if isinstance(obj, datetime):
-#        serial = obj.isoformat()
-        serial = int((obj - datetime(1970,1,1)).total_seconds())
-        return serial
-    raise TypeError ("Type not serializable")
+def json_serial(obj, dateformat = "iso"):
+    """JSON serializer for objects not serializable by default json code.
 
-def json_dumps(data, compact = True):
+    Currently serializes everything "as by default", except for
+    datetime, which is serialized as datetime.isoformat(), if
+    dateformat is "iso" (default), or as Unix time (number of microseconds
+    since January 1st 1970), if dateformat is "utime"
+
+    :param object: object to serialize
+    :param dateformat: format to produce for datetime ("iso" or "utime")
+    :type dateformat: str or unicode
+    :returns: serialized string
+    :rtype: str or unicode
+
+    """
+
+    if isinstance(obj, datetime):
+        if dateformat == "iso":
+            serial = obj.isoformat()
+        elif dateformat =="utime":
+            serial = int((obj - datetime(1970,1,1)).total_seconds())
+        else:
+            raise ValueError ("Unknown format for datetime: " + str(dateformat))
+        return serial
+    raise TypeError ("Type not serializable: " + type(obj).__name__)
+
+def json_serial_iso (obj):
+    """JSON serializer, using datetime.isoformat() for datetime objects.
+
+    """
+
+    return json_serial (obj, dateformat = "iso")
+
+def json_serial_utime (obj):
+    """JSON serializer, using Unix time for datetime objects.
+
+    """
+
+    return json_serial (obj, dateformat = "utime")
+
+    
+def json_dumps(data, compact = True, dateformat = "iso"):
+    """Dumps data to a JSON string.
+
+    :param data: data to serialize
+    :param compact: use compact output
+    :type compact: bool
+    :param dateformat: format for datetime objects ("iso" or "utime")
+    :type dateformat: str or unicode
+    :returns: serialized string
+    :rtype: str or unicode
+
+    """
+
+    if dateformat == "iso":
+        serializer = json_serial_iso
+    elif dateformat == "utime":
+        serializer = json_serial_utime
+    else:
+        raise ValueError ("Unknown format for datetime: " + str(dateformat))
     if compact:
         return json.dumps(data, sort_keys=False,
                           separators=(',',':'),
-                          default=json_serial)
+                          default=serializer)
     else:
         return json.dumps(data, sort_keys=False, 
                           indent=4, separators=(',', ': '),
-                          default=json_serial)
+                          default=serializer)
 
-def produce_json (filename, data, compact = True):
-    """Produce JSON content (data) into a file (filename).
+def write_file_json (filename, data, compact = True, dateformat = "utime"):
+    """Write JSON content (a dataframe) into a file (filename).
 
-    Parameters
-    ----------
-
-    filename: string
-       Name of file to write the content.
-    data: any
-       Content to write in JSON format. It has to be ready to pack using
-       jsonpickle.encode.
+    :param filename: Name of file to write the content.
+    :type filename: str or unicode
+    :param data: dataframe  to serialize
+    :type data: dataframe
+    :param compact: use compact output
+    :type compact: bool
+    :param dateformat: format for datetime objects ("iso" or "utime")
+    :type dateformat: str or unicode
 
     """
 
@@ -119,28 +171,49 @@ def produce_json (filename, data, compact = True):
     json_dict['names'] = list(data.columns.values)
     json_dict['values'] = data.values.tolist()
 
-    data_json = json_dumps(json_dict, compact)
+    data_json = json_dumps(json_dict, compact, dateformat = dateformat)
     with codecs.open(filename, "w", "utf-8") as file:
         file.write(data_json)
 
 
-def create_report (report_files, destdir):
+def create_report (report_files, destdir, dateformat = "utime"):
     """Create report, by producing a collection of JSON files
 
-    Parameters
-    ----------
-
-    report_files: dictionary
-       Keys are the names of JSON files to produce, values are the
-       data to include in those JSON files.
-    destdir: str
-       Name of the destination directory to write all JSON files
+    :param report_files: Keys are the names of JSON files to produce,
+                         values are the data to include in those JSON files.
+    :type report_files: dict
+    :param destdir: Name of the destination directory to write all JSON files
+    :type destdir: str or unicode
 
     """
 
     for file in report_files:
         print "Producing file: ", join (destdir, file)
-        produce_json (join (destdir, file), report_files[file])
+        write_file_json (join (destdir, file), report_files[file],
+                         dateformat = dateformat)
+
+
+def upload_elasticsearch (url, data):
+    """Upload data (dataframe) to elasticsearch in url.
+
+    :param url: elasticsearch url
+    :type url: str
+    :param data: dataframe to upload to elasticsearch
+
+    """
+    
+    import urllib2
+    print "Feeding data to elasticsearch at " + url
+    opener = urllib2.build_opener(urllib2.HTTPHandler)
+    for index, row in data.iterrows():
+        json_dict = OrderedDict(row)
+        data_json = json_dumps(json_dict, compact = True, dateformat = "iso")
+        # print index,
+        url_id = url + str(json_dict["id"])
+        request = urllib2.Request(url_id, data=data_json)
+        request.get_method = lambda: 'PUT'
+        response = opener.open(request)
+        # print response.read()
 
 class Database:
     """To work with a database (likely including several schemas).
@@ -221,7 +294,7 @@ def query_commits (allbranches, since, verbose):
     """Execute query to select commits."""
 
     sql = """SELECT scmlog.id AS id, 
-  scmlog.date AS date,
+  scmlog.author_date AS date,
   uidentities.uuid AS person_id,
   profiles.name AS name,
   enrollments.organization_id AS org_id,
@@ -256,7 +329,7 @@ FROM {scm_db}.scmlog
     sql = sql + \
 """        (enrollments.start IS NULL OR
     (scmlog.date > enrollments.start AND scmlog.date < enrollments.end))
-GROUP BY scmlog.rev
+GROUP BY scmlog.rev ORDER BY scmlog.author_date
 """
     commits = db.execute(sql, verbose)
     return commits
@@ -382,30 +455,27 @@ if __name__ == "__main__":
 
     # Produce messages and hashes dataframe for commits
     commits_messages_df = commits_df[["id", "message", "hash"]]
-    
-    prefix = join (args.output, "scm-")
-    report = OrderedDict()
 
-    report[prefix + 'commits.json'] = commits_pkd_df
-    report[prefix + 'messages.json'] = commits_messages_df
-    report[prefix + 'orgs.json'] = orgs_df
-    report[prefix + 'repos.json'] = repos_df
-    report[prefix + 'persons.json'] = persons_df
-    create_report (report_files = report, destdir = './')
+    if args.output:
+        print "Producing JSON files in directory: " + args.output
+        prefix = join (args.output, "scm-")
+        report = OrderedDict()
+        if args.dateformat:
+            dateformat = args.dateformat
+        else:
+            dateformat = "utime"
+        report[prefix + 'commits.json'] = commits_pkd_df
+        report[prefix + 'messages.json'] = commits_messages_df
+        report[prefix + 'orgs.json'] = orgs_df
+        report[prefix + 'repos.json'] = repos_df
+        report[prefix + 'persons.json'] = persons_df
+        create_report (report_files = report, destdir = './',
+                       dateformat = dateformat)
 
     if args.elasticsearch:
-        import urllib2
-        print "Feeding data to elasticsearch at " + args.elasticsearch
-        opener = urllib2.build_opener(urllib2.HTTPHandler)
-        for index, row in commits_df.iterrows():
-            json_dict = OrderedDict(row)
-            data_json = json_dumps(json_dict, compact = True)
-            # print index,
-            url = args.elasticsearch + str(json_dict["id"])
-            request = urllib2.Request(url, data=data_json)
-            request.get_method = lambda: 'PUT'
-            response = opener.open(request)
-            # print response.read()
+        print "Uploading data to elasticsearch at: " + args.elasticsesarch
+        upload_elasticsearch (url = args.elasticsesarch,
+                              data = commits_df)
 
 
 
