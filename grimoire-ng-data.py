@@ -63,6 +63,8 @@ def parse_args ():
                         help = "SCM (git) database")
     parser.add_argument("--shdb", required = True,
                         help = "SortingHat database")
+    parser.add_argument("--prjdb", required = False,
+                        help = "Projects database (if not specified, same as SCM database)")
     parser.add_argument("--output", default = "",
                         help = "Output directory")
     parser.add_argument("--dateformat",
@@ -218,6 +220,16 @@ class Database:
     """To work with a database (likely including several schemas).
     """
     
+    def __init__ (self, user, passwd, host, port, scmdb, shdb, prjdb):
+        self.user = user
+        self.passwd = passwd
+        self.host = host
+        self.port = port
+        self.scmdb = scmdb
+        self.shdb = shdb
+        self.prjdb = prjdb
+        self.db, self.cursor = self._connect()
+
     def _connect(self):
         """Connect to the MySQL database.
         """
@@ -238,7 +250,8 @@ class Database:
         """
         
         sql = query.format(scm_db = self.scmdb,
-                           sh_db = self.shdb)
+                           sh_db = self.shdb,
+                           prj_db = self.prjdb)
         if show:
             print sql
         results = int (self.cursor.execute(sql))
@@ -248,15 +261,6 @@ class Database:
             return result1
         else:
             return []
-
-    def __init__ (self, user, passwd, host, port, scmdb, shdb):
-        self.user = user
-        self.passwd = passwd
-        self.host = host
-        self.port = port
-        self.scmdb = scmdb
-        self.shdb = shdb
-        self.db, self.cursor = self._connect()
 
 def query_persons (allbranches, since, verbose):
     """ Execute query to select persons."""
@@ -361,10 +365,10 @@ query_repos = """SELECT repositories.id AS repo_id,
   projects.project_id AS project_id,
   projects.id AS project
 FROM {scm_db}.repositories
-LEFT JOIN {scm_db}.project_repositories
+LEFT JOIN {prj_db}.project_repositories
   ON repositories.uri = project_repositories.repository_name
     AND repositories.type = "git"
-LEFT JOIN {scm_db}.projects
+LEFT JOIN {prj_db}.projects
   ON projects.project_id = project_repositories.project_id
 GROUP BY repo_id ORDER BY repo_id"""
 
@@ -391,9 +395,16 @@ if __name__ == "__main__":
         print "Analyzing since: " + args.since + "."
     else:
         print "Analyzing since the first commit."
+    if args.prjdb:
+        print "Using projects database, as specified."
+        prjdb = args.prjdb
+    else:
+        print "No projects database specified, using SCM database instead."
+        prjdb = args.scmdb
     db = Database (user = args.user, passwd = args.passwd,
                    host = args.host, port = args.port,
-                   scmdb = args.scmdb, shdb = args.shdb)
+                   scmdb = args.scmdb, shdb = args.shdb,
+                   prjdb = prjdb)
 
     print "Querying for persons"
     persons = query_persons (args.allbranches, args.since, args.verbose)
@@ -405,7 +416,7 @@ if __name__ == "__main__":
     # on the availability of the projects table
     print "Querying for repositories"
     try:
-        check = db.execute("SELECT 1 FROM {scm_db}.projects LIMIT 1", args.verbose)
+        check = db.execute("SELECT 1 FROM {prj_db}.projects LIMIT 1", args.verbose)
         projects_exist = True
     except _mysql_exceptions.ProgrammingError, e:
         if e[0] == 1146:
@@ -413,9 +424,10 @@ if __name__ == "__main__":
         else:
             raise
     if projects_exist:
+        print "Projects tables found, producing projects information."
         repos = db.execute(query_repos, args.verbose)
     else:
-        print "No projects tables, using just one project"
+        print "No projects tables, producing just one project"
         repos = db.execute(query_repos_noprojects, args.verbose)
 
     # Produce commits data
