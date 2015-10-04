@@ -170,7 +170,6 @@ def write_file_json (filename, data, compact = True, dateformat = "utime"):
     json_dict = OrderedDict()
     json_dict['names'] = list(data.columns.values)
     json_dict['values'] = data.values.tolist()
-
     data_json = json_dumps(json_dict, compact, dateformat = dateformat)
     with codecs.open(filename, "w", "utf-8") as file:
         file.write(data_json)
@@ -385,9 +384,9 @@ if __name__ == "__main__":
     args = parse_args()
 
     if args.allbranches:
-        print "Analyzing all git branches."
+        print "Analyzing comits in git master branch, landed in all branches."
     else:
-        print "Analyzing only git master branch."
+        print "Analyzing only commits in git master branch, landed in master branch."
     if args.since:
         print "Analyzing since: " + args.since + "."
     else:
@@ -423,6 +422,8 @@ if __name__ == "__main__":
     print "Commits: ", len(commits)
     commits_df = pandas.DataFrame(list(commits), columns=["id", "date", "author_uuid", "name", "org_id", "repo_id", "message", "hash", "tz", "tz_orig", "org_name"])
     commits_df["org_id"].fillna(0, inplace=True)
+    # None (NaN) is treated as float, making all the column float
+    commits_df["org_id"] = commits_df["org_id"].astype("int")
     commits_df["org_name"].fillna("Unknown", inplace=True)
     commits_df["name"] = commits_df["name"] + " (" + commits_df["org_name"] + ")"
 
@@ -452,7 +453,6 @@ if __name__ == "__main__":
     commits_pkd_df = commits_pkd_df[["id_x", "date", "id_y", "org_id",
                                      "repo_id", "tz"]]
     commits_pkd_df.columns = ["id", "date", "author", "org", "repo", "tz"]
-
     # Produce messages and hashes dataframe for commits
     commits_messages_df = commits_df[["id", "message", "hash"]]
 
@@ -465,6 +465,7 @@ if __name__ == "__main__":
         else:
             dateformat = "utime"
         report[prefix + 'commits.json'] = commits_pkd_df
+        pandas.set_option('display.max_rows', len(commits_pkd_df))
         report[prefix + 'messages.json'] = commits_messages_df
         report[prefix + 'orgs.json'] = orgs_df
         report[prefix + 'repos.json'] = repos_df
