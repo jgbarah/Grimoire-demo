@@ -78,9 +78,9 @@ def parse_args ():
                         help = "Consider only commits since specified date " + \
                         "(YYYY-MM-DD format)")
     parser.add_argument("--elasticsearch", nargs="?",
-                        const = "http://localhost:9200/scm/commits/",
-                        help = "Feed commits to elasticsearch, in given url " + \
-                        "(default, http://localhost:9200/scm/commits/)")
+                        const = "http://localhost:9200/scm",
+                        help = "Url of elasticsearch index to create " + \
+                        "(default, http://localhost:9200/scm)")
     
     args = parser.parse_args()
     return args
@@ -194,27 +194,61 @@ def create_report (report_files, destdir, dateformat = "utime"):
                          dateformat = dateformat)
 
 
+es_scm_mapping = """
+{"mappings":
+  {"commit":
+    {"properties":
+      {"author_uuid":{"type":"string"},
+       "date":{"type":"date",
+               "format":"dateOptionalTime"},
+       "hash":{"type":"string",
+               "index":"not_analyzed"},
+       "id":{"type":"long"},
+       "message":{"type":"string"},
+       "name":{"type":"string",
+               "index":"not_analyzed"},
+       "org_id":{"type":"long"},
+       "org_name":{"type":"string",
+                   "index":"not_analyzed"},
+       "repo_id":{"type":"long"},
+       "tz":{"type":"long"},
+       "tz_orig":{"type":"long"}
+      }
+    }
+  }
+}
+"""
+
 def upload_elasticsearch (url, data):
     """Upload data (dataframe) to elasticsearch in url.
 
-    :param url: elasticsearch url
+    :param url: elasticsearch url of the index to create (no final /)
     :type url: str
     :param data: dataframe to upload to elasticsearch
 
     """
     
     import urllib2
-    print "Feeding data to elasticsearch at " + url
     opener = urllib2.build_opener(urllib2.HTTPHandler)
+    # Delete index, just in case
+    request = urllib2.Request(url)
+    request.get_method = lambda: 'DELETE'
+    response = opener.open(request)    
+    print response.read()
+    # Create mappings
+    request = urllib2.Request(url, data = es_scm_mapping)
+    request.get_method = lambda: 'PUT'
+    response = opener.open(request)
+    print response.read()
     for index, row in data.iterrows():
         json_dict = OrderedDict(row)
         data_json = json_dumps(json_dict, compact = True, dateformat = "iso")
-        # print index,
-        url_id = url + str(json_dict["id"])
+        print index,
+        url_id = url + "/commit/" + str(json_dict["id"])
         request = urllib2.Request(url_id, data=data_json)
         request.get_method = lambda: 'PUT'
         response = opener.open(request)
-        # print response.read()
+        #print response.read()
 
 class Database:
     """To work with a database (likely including several schemas).
@@ -486,8 +520,8 @@ if __name__ == "__main__":
                        dateformat = dateformat)
 
     if args.elasticsearch:
-        print "Uploading data to elasticsearch at: " + args.elasticsesarch
-        upload_elasticsearch (url = args.elasticsesarch,
+        print "Feeding data to elasticsearch at: " + args.elasticsearch
+        upload_elasticsearch (url = args.elasticsearch,
                               data = commits_df)
 
 
