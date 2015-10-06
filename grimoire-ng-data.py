@@ -211,8 +211,10 @@ es_scm_mapping = """
    "commit":
     {"properties":
       {"id":{"type":"long"},
-       "date":{"type":"date",
-               "format":"dateOptionalTime"},
+       "author_date":{"type":"date",
+                      "format":"dateOptionalTime"},
+       "commit_date":{"type":"date",
+                      "format":"dateOptionalTime"},
        "message":{"type":"string"},
        "hash":{"type":"string",
                "index":"not_analyzed"},
@@ -252,15 +254,67 @@ def http_put (url, body):
     request = urllib2.Request(url, data=body)
     request.get_method = lambda: 'PUT'
     response = opener.open(request)
-    return response
+    return response.read()
+
+def es_put_bulk (url, index, type, data, id):
+    """Use HTTP PUT, via bulk API, to upload documents to Elasticsearch.
+
+    Uploads a dataframe, assuming each row is a document, to the specified
+    index and type.
+
+    :param url: elasticsearch url
+    :type url: str
+    :param index: index name
+    :type index: str
+    :param type: type name
+    :type type: str
+    :param data: dataframe to upload to elasticsearch
+    :type data: pandas.dataframe 
+    :param id: dataframe field to use as document id
+    :type id: str
+
+    """
+
+    index_line = '{{ "index" : {{ "_index" : "{index}", "_type" : "{type}", "_id" : "{id}" }} }}'
+
+    batch_pos = 0
+    batch_count = 1
+    batch = ""
+    for i, row in data.iterrows():
+        batch_item = index_line.format (index = index,
+                                        type = type,
+                                        id = row[id]) + '\n'
+        batch_item = batch_item + json_dumps(OrderedDict(row),
+                                             compact = True,
+                                             dateformat = "iso") + '\n'
+        batch = batch + batch_item
+        batch_pos = batch_pos + 1
+        if batch_pos % 1000 == 0:
+            print "PUT to " + url + " " + index + "/" + type \
+                + " (batch no: " + str(batch_count) \
+                + ", " + str(batch_pos) + " items)."
+            http_put (url + "/_bulk", batch)
+            batch_pos = 0
+            batch_count = batch_count + 1
+            batch = ""
+    if batch_pos > 0:
+        print "PUT to " + url + " " + index + "/" + type \
+            + " (batch no: " + str(batch_count) \
+            + ", " + str(batch_pos) + " items)."
+        http_put (url + "/_bulk", batch)
 
 def upload_elasticsearch (url, index, data, repos):
     """Upload data (dataframe) to elasticsearch in url.
 
-    :param url: elasticsearch url of the index to create (no final /)
+    :param url: elasticsearch url
     :type url: str
-    :param data: dataframe to upload to elasticsearch
-
+    :param index: index name
+    :type index: str
+    :param data: commits dataframe
+    :type data: pandas.dataframe
+    :param repos: repositories dataframe
+    :type repos: pandas.dataframe
+    
     """
     
     import urllib2
@@ -278,45 +332,8 @@ def upload_elasticsearch (url, index, data, repos):
     # Create mappings
     response = http_put (url + "/" + index, es_scm_mapping)
     print response
-    for i, row in repos.iterrows():
-        json_dict = OrderedDict(row)
-        data_json = json_dumps(json_dict, compact = True, dateformat = "iso")
-        print index,
-        url_id = url + "/" + index + "/repo/" + str(json_dict["repo_id"])
-        request = urllib2.Request(url_id, data=data_json)
-        request.get_method = lambda: 'PUT'
-        response = opener.open(request)
-        #print response.read()
-    # for i, row in data.iterrows():
-    #     json_dict = OrderedDict(row)
-    #     data_json = json_dumps(json_dict, compact = True, dateformat = "iso")
-    #     print index,
-    #     url_id = url + "/" + index + "/commit/" + str(json_dict["id"])
-    #     print url_id
-    #     request = urllib2.Request(url_id, data=data_json)
-    #     request.get_method = lambda: 'PUT'
-    #     response = opener.open(request)
-    #     print response.read()
-    batch_pos = 0
-    batch = ""
-    index_line = '{{ "index" : {{ "_index" : "{index}", "_type" : "{type}", "_id" : "{id}" }} }}'
-    for i, row in data.iterrows():
-        json_dict = OrderedDict(row)
-        data_json = json_dumps(json_dict, compact = True, dateformat = "iso")
-        batch_item = index_line.format (index = index,
-                                   type = 'commit',
-                                   id = json_dict['id']) + '\n'
-        batch_item = batch_item + data_json + '\n'
-        print batch_item
-        batch = batch + batch_item
-        batch_pos = batch_pos + 1
-        if batch_pos % 1000 == 0:
-            print "PUT to " + url + " (" + str(batch_pos) + " items)."
-            http_put (url + "/_bulk", batch)
-            batch_pos = 0
-    if batch_pos > 0:
-        print "PUT to " + url + " (" + str(batch_pos) + " items)."
-        http_put (url + "/_bulk", batch)
+    es_put_bulk (url, index, 'repo', repos, 'repo_id')
+    es_put_bulk (url, index, 'commit', data, 'id')
     
 class Database:
     """To work with a database (likely including several schemas).
@@ -400,6 +417,7 @@ def query_commits (allbranches, since, verbose):
 
     sql = """SELECT scmlog.id AS id, 
   scmlog.author_date AS date,
+  scmlog.date AS commit_date,
   uidentities.uuid AS person_id,
   profiles.name AS name,
   enrollments.organization_id AS org_id,
@@ -534,7 +552,7 @@ if __name__ == "__main__":
 
     # Produce commits data
     print "Commits: ", len(commits)
-    commits_df = pandas.DataFrame(list(commits), columns=["id", "date", "author_uuid", "name", "org_id", "repo_id", "message", "hash", "tz", "tz_orig", "org_name"])
+    commits_df = pandas.DataFrame(list(commits), columns=["id", "date", "commit_date", "author_uuid", "name", "org_id", "repo_id", "message", "hash", "tz", "tz_orig", "org_name"])
     commits_df["org_id"].fillna(0, inplace=True)
     # None (NaN) is treated as float, making all the column float, convert to int
     commits_df["org_id"] = commits_df["org_id"].astype("int")
@@ -601,11 +619,12 @@ if __name__ == "__main__":
                                         left_on="author_uuid", right_on="uuid",
                                         how="left")
         commits_comp_df = \
-            commits_comp_df [['id_x', 'date', 'message', 'hash', 'tz',
+            commits_comp_df [['id_x', 'date', 'commit_date', 'message', 'hash', 'tz',
                               'author_uuid', 'author_name', 'bot',
                               'org_id', 'org_name', 'repo_id', 'repo_name',
                               'project_id', 'project_name']]
-        commits_comp_df.columns = [['id', 'date', 'message', 'hash', 'tz',
+        commits_comp_df.columns = [['id', 'author_date', 'commit_date',
+                                    'message', 'hash', 'tz',
                                     'author_uuid', 'author_name', 'bot', 
                                     'org_id', 'org_name', 'repo_id', 'repo_name',
                                     'project_id', 'project_name']]
