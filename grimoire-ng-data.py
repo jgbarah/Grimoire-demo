@@ -33,6 +33,7 @@ import json
 from os.path import join
 from datetime import datetime
 from jsonpickle import encode, set_encoder_options
+import urllib2
 
 description = """
 Produce JSON files needed by a GrimoireNG dashboard.
@@ -77,10 +78,9 @@ def parse_args ():
     parser.add_argument("--since",
                         help = "Consider only commits since specified date " + \
                         "(YYYY-MM-DD format)")
-    parser.add_argument("--elasticsearch", nargs="?",
-                        const = "http://localhost:9200/scm",
-                        help = "Url of elasticsearch index to create " + \
-                        "(default, http://localhost:9200/scm)")
+    parser.add_argument("--elasticsearch", nargs=2,
+                        help = "Url of elasticsearch, and index to use " + \
+                        "(eg: http://localhost:9200 scm)")
     
     args = parser.parse_args()
     return args
@@ -196,30 +196,63 @@ def create_report (report_files, destdir, dateformat = "utime"):
 
 es_scm_mapping = """
 {"mappings":
-  {"commit":
+  {"repo":
     {"properties":
-      {"author_uuid":{"type":"string"},
+      {"project_id":{"type":"long"},
+       "project_name":{"type":"string",
+                       "index":"not_analyzed"},
+       "repo_id":{"type":"long"},
+       "repo_name":{"type":"string",
+                    "index":"not_analyzed"}
+      }
+    },
+   "commit":
+    {"properties":
+      {"id":{"type":"long"},
        "date":{"type":"date",
                "format":"dateOptionalTime"},
+       "message":{"type":"string"},
        "hash":{"type":"string",
                "index":"not_analyzed"},
-       "id":{"type":"long"},
-       "message":{"type":"string"},
-       "name":{"type":"string",
-               "index":"not_analyzed"},
+       "tz":{"type":"long"},
+       "author_uuid":{"type":"string"},
+       "author_name":{"type":"string",
+                      "index":"not_analyzed"},
+       "bot":{"type":"long"},
        "org_id":{"type":"long"},
        "org_name":{"type":"string",
                    "index":"not_analyzed"},
        "repo_id":{"type":"long"},
-       "tz":{"type":"long"},
-       "tz_orig":{"type":"long"}
+       "repo_name":{"type":"string",
+                    "index":"not_analyzed"},
+       "project_id":{"type":"long"},
+       "project_name":{"type":"string",
+                       "index":"not_analyzed"}
       }
     }
   }
 }
 """
 
-def upload_elasticsearch (url, data):
+def http_put (url, body):
+    """Perform HTTP PUT on url.
+
+    :param url: url
+    :type url: str
+    :param body: body of the HTTP request (content to upload)
+    :type body: str
+    :returns body of the HTTP response
+    :rtype str
+
+    """
+
+    opener = urllib2.build_opener(urllib2.HTTPHandler)
+    request = urllib2.Request(url, data=body)
+    request.get_method = lambda: 'PUT'
+    response = opener.open(request)
+    return response
+
+def upload_elasticsearch (url, index, data, repos):
     """Upload data (dataframe) to elasticsearch in url.
 
     :param url: elasticsearch url of the index to create (no final /)
@@ -231,25 +264,60 @@ def upload_elasticsearch (url, data):
     import urllib2
     opener = urllib2.build_opener(urllib2.HTTPHandler)
     # Delete index, just in case
-    request = urllib2.Request(url)
+    request = urllib2.Request(url + "/" + index)
     request.get_method = lambda: 'DELETE'
-    response = opener.open(request)    
-    print response.read()
+    try:
+        response = opener.open(request)
+        print "Elasticsearch: index deleted."
+        print response.read()
+    except urllib2.HTTPError as e:
+        if e.code == 404:
+            print "Elasticsearch: index didn't exist."
     # Create mappings
-    request = urllib2.Request(url, data = es_scm_mapping)
+    request = urllib2.Request(url + "/" + index,
+                              data = es_scm_mapping)
     request.get_method = lambda: 'PUT'
     response = opener.open(request)
     print response.read()
-    for index, row in data.iterrows():
+    for i, row in repos.iterrows():
         json_dict = OrderedDict(row)
         data_json = json_dumps(json_dict, compact = True, dateformat = "iso")
         print index,
-        url_id = url + "/commit/" + str(json_dict["id"])
+        url_id = url + "/" + index + "/repo/" + str(json_dict["repo_id"])
         request = urllib2.Request(url_id, data=data_json)
         request.get_method = lambda: 'PUT'
         response = opener.open(request)
         #print response.read()
-
+    # for i, row in data.iterrows():
+    #     json_dict = OrderedDict(row)
+    #     data_json = json_dumps(json_dict, compact = True, dateformat = "iso")
+    #     print index,
+    #     url_id = url + "/" + index + "/commit/" + str(json_dict["id"])
+    #     print url_id
+    #     request = urllib2.Request(url_id, data=data_json)
+    #     request.get_method = lambda: 'PUT'
+    #     response = opener.open(request)
+    #     print response.read()
+    batch_pos = 0
+    batch = ""
+    index_line = '{{ "index" : {{ "_index" : "{index}", "_type" : "{type}", "_id" : "{id}" }} }}'
+    for i, row in data.iterrows():
+        json_dict = OrderedDict(row)
+        data_json = json_dumps(json_dict, compact = True, dateformat = "iso")
+        batch_item = index_line.format (index = index,
+                                   type = 'commit',
+                                   id = json_dict['id']) + '\n'
+        batch_item = batch_item + data_json + '\n'
+        print batch_item
+        batch = batch + batch_item
+        batch_pos = batch_pos + 1
+        if batch_pos % 1000 == 0:
+            print "PUT to " + url + " (" + str(batch_pos) + " items)."
+            http_put (url + "/_bulk", batch)
+    if batch_pos > 0:
+        print "PUT to " + url + " (" + str(batch_pos) + " items)."
+        http_put (url + "/_bulk", batch)
+    
 class Database:
     """To work with a database (likely including several schemas).
     """
@@ -468,9 +536,10 @@ if __name__ == "__main__":
     print "Commits: ", len(commits)
     commits_df = pandas.DataFrame(list(commits), columns=["id", "date", "author_uuid", "name", "org_id", "repo_id", "message", "hash", "tz", "tz_orig", "org_name"])
     commits_df["org_id"].fillna(0, inplace=True)
-    # None (NaN) is treated as float, making all the column float
+    # None (NaN) is treated as float, making all the column float, convert to int
     commits_df["org_id"] = commits_df["org_id"].astype("int")
     commits_df["org_name"].fillna("Unknown", inplace=True)
+    commits_df["author_name"] = commits_df["name"]
     commits_df["name"] = commits_df["name"] + " (" + commits_df["org_name"] + ")"
 
     print "Organizations: ", len(orgs)
@@ -482,6 +551,8 @@ if __name__ == "__main__":
                                 columns=["repo_id", "repo_name",
                                          "project_id", "project_name"])
     repos_df["project_id"].fillna(0, inplace=True)
+    # None (NaN) is treated as float, making all the column float, convert to int
+    repos_df["project_id"] = repos_df["project_id"].astype("int")
     repos_df["project_name"].fillna("No project", inplace=True)
     
     # Capitalizing could be a good idea, but not by default.
@@ -520,9 +591,29 @@ if __name__ == "__main__":
                        dateformat = dateformat)
 
     if args.elasticsearch:
-        print "Feeding data to elasticsearch at: " + args.elasticsearch
-        upload_elasticsearch (url = args.elasticsearch,
-                              data = commits_df)
+        esurl = args.elasticsearch[0]
+        esindex  = args.elasticsearch[1]
+        # Produce comprehensive commits dataframe
+        commits_comp_df = pandas.merge (commits_df, repos_df,
+                                        left_on="repo_id", right_on="repo_id",
+                                        how="left")
+        commits_comp_df = pandas.merge (commits_comp_df, persons_df,
+                                        left_on="author_uuid", right_on="uuid",
+                                        how="left")
+        commits_comp_df = \
+            commits_comp_df [['id_x', 'date', 'message', 'hash', 'tz',
+                              'author_uuid', 'author_name', 'bot',
+                              'org_id', 'org_name', 'repo_id', 'repo_name',
+                              'project_id', 'project_name']]
+        commits_comp_df.columns = [['id', 'date', 'message', 'hash', 'tz',
+                                    'author_uuid', 'author_name', 'bot', 
+                                    'org_id', 'org_name', 'repo_id', 'repo_name',
+                                    'project_id', 'project_name']]
+        print "Feeding data to elasticsearch at: " + esurl + "/" + esindex
+        upload_elasticsearch (url = esurl,
+                              index = esindex,
+                              data = commits_comp_df,
+                              repos = repos_df)
 
 
 
