@@ -23,6 +23,8 @@
 ## Example:
 ## grimoire-ng-data.py --user jgb --passwd XXX --scmdb dic_cvsanaly_openstack_4114_sh --shdb amartin_sortinghat_openstack --output openstack
 
+## grimoire-ng-data.py --user root --port 3308 --scmdb amartin_cvsanaly_openstack_sh --shdb amartin_sortinghat_openstack_sh --prjdb amartin_projects_openstack_sh --allbranches --elasticsearch http://localhost:9200 scm --since 2015-10-01
+
 import argparse
 import MySQLdb
 import logging
@@ -274,11 +276,8 @@ def upload_elasticsearch (url, index, data, repos):
         if e.code == 404:
             print "Elasticsearch: index didn't exist."
     # Create mappings
-    request = urllib2.Request(url + "/" + index,
-                              data = es_scm_mapping)
-    request.get_method = lambda: 'PUT'
-    response = opener.open(request)
-    print response.read()
+    response = http_put (url + "/" + index, es_scm_mapping)
+    print response
     for i, row in repos.iterrows():
         json_dict = OrderedDict(row)
         data_json = json_dumps(json_dict, compact = True, dateformat = "iso")
@@ -314,6 +313,7 @@ def upload_elasticsearch (url, index, data, repos):
         if batch_pos % 1000 == 0:
             print "PUT to " + url + " (" + str(batch_pos) + " items)."
             http_put (url + "/_bulk", batch)
+            batch_pos = 0
     if batch_pos > 0:
         print "PUT to " + url + " (" + str(batch_pos) + " items)."
         http_put (url + "/_bulk", batch)
