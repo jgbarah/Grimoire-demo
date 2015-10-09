@@ -62,8 +62,10 @@ def parse_args ():
     parser.add_argument("--port",  type = int, default = 3306,
                         help = "Port to access the databases" + \
                         "(default: 3306, standard MySQL port)")
-    parser.add_argument("--scmdb", required = True,
+    parser.add_argument("--scmdb", required = False,
                         help = "SCM (git) database")
+    parser.add_argument("--scrdb", required = False,
+                        help = "SCR (Gerrit) database")
     parser.add_argument("--shdb", required = True,
                         help = "SortingHat database")
     parser.add_argument("--prjdb", required = False,
@@ -82,7 +84,7 @@ def parse_args ():
                         "(YYYY-MM-DD format)")
     parser.add_argument("--elasticsearch", nargs=2,
                         help = "Url of elasticsearch, and index to use " + \
-                        "(eg: http://localhost:9200 scm)")
+                        "(eg: http://localhost:9200 project)")
     
     args = parser.parse_args()
     return args
@@ -352,7 +354,7 @@ class Database:
     def _connect(self):
         """Connect to the MySQL database.
         """
-        
+
         try:
             db = MySQLdb.connect(user = self.user, passwd = self.passwd,
                                  host = self.host, port = self.port,
@@ -367,7 +369,7 @@ class Database:
 
         The query can be "templated" with {scm_db} and {sh_db}.
         """
-        
+
         sql = query.format(scm_db = self.scmdb,
                            sh_db = self.shdb,
                            prj_db = self.prjdb)
@@ -379,10 +381,55 @@ class Database:
             result1 = self.cursor.fetchall()
             return result1
         else:
+            print results
             return []
 
-def query_persons (allbranches, since, verbose):
+def query_reviews (db, verbose):
+    """ Execute query to select reviews.
+
+    """
+
+    sql = """select i.issue as gerrit_issue,
+  i.summary as summary,
+  i.submitted_by as changeset_submitter,
+  t2.opening_date as opening_date, 
+  count(distinct(ch.old_value)) as num_patchsets,
+  t.url as gerrit_tracker, 
+  t1.closed_date  as closed_date,
+  timestampdiff(SECOND, t2.opening_date, t1.closed_date) as time2close,
+  i.status as current_status
+from issues i, 
+  trackers t,
+  changes ch,
+  (select i.id as issue_id,
+     ch.changed_on as closed_date
+   from issues i
+   left join changes ch on ch.issue_id = i.id and field='status'
+     and (new_value='ABANDONED' or new_value='MERGED')
+   ) t1, 
+  (select ch.issue_id,
+     ch.changed_on as opening_date
+   from changes ch
+   where ch.field='status' and ch.new_value='UPLOADED' and ch.old_value=1
+   ) t2 
+where i.tracker_id=t.id and ch.issue_id = i.id and i.id=t1.issue_id
+  and i.id=t2.issue_id group by i.issue
+"""
+    reviews = db.execute(sql, verbose)
+    return reviews
+
+def analyze_scr (db, output, elasticsearch,
+                 dateformat, verbose):
+    """Analyze SCM database.
+
+    """
+    
+    print "Querying for reviews"
+    persons = query_reviews (db, verbose)
+
+def query_persons (db, allbranches, since, verbose):
     """ Execute query to select persons."""
+
     sql = """SELECT uidentities.uuid AS uuid,
   profiles.name AS name,
   profiles.is_bot AS bot
@@ -500,43 +547,32 @@ query_repos_noprojects = """SELECT repositories.id AS repo_id,
 FROM {scm_db}.repositories
 ORDER BY repo_id"""
 
+def analyze_scm (db, allbranches, since, output, elasticsearch,
+                 dateformat, verbose):
+    """Analyze SCM database.
 
-if __name__ == "__main__":
-
-    import _mysql_exceptions
+    """
     
-    args = parse_args()
-
-    if args.allbranches:
+    if allbranches:
         print "Analyzing comits in git master branch, landed in all branches."
     else:
         print "Analyzing only commits in git master branch, landed in master branch."
-    if args.since:
-        print "Analyzing since: " + args.since + "."
+    if since:
+        print "Analyzing since: " + since + "."
     else:
         print "Analyzing since the first commit."
-    if args.prjdb:
-        print "Using projects database, as specified."
-        prjdb = args.prjdb
-    else:
-        print "No projects database specified, using SCM database instead."
-        prjdb = args.scmdb
-    db = Database (user = args.user, passwd = args.passwd,
-                   host = args.host, port = args.port,
-                   scmdb = args.scmdb, shdb = args.shdb,
-                   prjdb = prjdb)
 
     print "Querying for persons"
-    persons = query_persons (args.allbranches, args.since, args.verbose)
+    persons = query_persons (db, allbranches, since, verbose)
     print "Querying for organizations"
-    orgs = db.execute(query_orgs, args.verbose)
+    orgs = db.execute(query_orgs, verbose)
     print "Querying for commits"
-    commits = query_commits (args.allbranches, args.since, args.verbose)
+    commits = query_commits (allbranches, since, verbose)
     # Produce repos data, with or without projects, depending
     # on the availability of the projects table
     print "Querying for repositories"
     try:
-        check = db.execute("SELECT 1 FROM {prj_db}.projects LIMIT 1", args.verbose)
+        check = db.execute("SELECT 1 FROM {prj_db}.projects LIMIT 1", verbose)
         projects_exist = True
     except _mysql_exceptions.ProgrammingError, e:
         if e[0] == 1146:
@@ -545,10 +581,10 @@ if __name__ == "__main__":
             raise
     if projects_exist:
         print "Projects tables found, producing projects information."
-        repos = db.execute(query_repos, args.verbose)
+        repos = db.execute(query_repos, verbose)
     else:
         print "No projects tables, producing just one project"
-        repos = db.execute(query_repos_noprojects, args.verbose)
+        repos = db.execute(query_repos_noprojects, verbose)
 
     # Produce commits data
     print "Commits: ", len(commits)
@@ -591,14 +627,10 @@ if __name__ == "__main__":
     # Produce messages and hashes dataframe for commits
     commits_messages_df = commits_df[["id", "message", "hash"]]
 
-    if args.output:
-        print "Producing JSON files in directory: " + args.output
-        prefix = join (args.output, "scm-")
+    if output:
+        print "Producing JSON files in directory: " + output
+        prefix = join (output, "scm-")
         report = OrderedDict()
-        if args.dateformat:
-            dateformat = args.dateformat
-        else:
-            dateformat = "utime"
         report[prefix + 'commits.json'] = commits_pkd_df
         pandas.set_option('display.max_rows', len(commits_pkd_df))
         report[prefix + 'messages.json'] = commits_messages_df
@@ -608,9 +640,9 @@ if __name__ == "__main__":
         create_report (report_files = report, destdir = './',
                        dateformat = dateformat)
 
-    if args.elasticsearch:
-        esurl = args.elasticsearch[0]
-        esindex  = args.elasticsearch[1]
+    if elasticsearch:
+        esurl = elasticsearch[0]
+        esindex  = elasticsearch[1]
         # Produce comprehensive commits dataframe
         commits_comp_df = pandas.merge (commits_df, repos_df,
                                         left_on="repo_id", right_on="repo_id",
@@ -633,6 +665,47 @@ if __name__ == "__main__":
                               index = esindex,
                               data = commits_comp_df,
                               repos = repos_df)
+
+if __name__ == "__main__":
+
+    import _mysql_exceptions
+    
+    args = parse_args()
+
+    if args.prjdb:
+        print "Using projects database, as specified."
+        prjdb = prjdb
+    else:
+        print "No projects database specified, using SCM database instead."
+        prjdb = args.scmdb
+    if args.dateformat:
+        dateformat = args.dateformat
+    else:
+        dateformat = "utime"
+
+    if args.scmdb:
+        print "SCM database specified, analyzing it."
+        db = Database (user = args.user, passwd = args.passwd,
+                       host = args.host, port = args.port,
+                       scmdb = args.scmdb, shdb = args.shdb,
+                       prjdb = prjdb)
+        analyze_scm(db = db,
+                    allbranches = args.allbranches,
+                    since = args.since,
+                    output = args.output,
+                    elasticsearch = args.elasticsearch,
+                    dateformat = dateformat,
+                    verbose = args.verbose,
+                    )
+    if args.scrdb:
+        print "SCR database specified, analyzing it."
+        db = Database (user = args.user, passwd = args.passwd,
+                       host = args.host, port = args.port,
+                       scrdb = args.scmdb, shdb = args.shdb,
+                       prjdb = prjdb)
+        analyze_scr(db = db,
+                    verbose = args.verbose,
+                    )
 
 
 
