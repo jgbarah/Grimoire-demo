@@ -21,7 +21,7 @@
 ##   Jesus M. Gonzalez-Barahona <jgb@bitergia.com>
 ##
 ## Example:
-## grimoire-ng-data.py --user jgb --passwd XXX --scmdb dic_cvsanaly_openstack_4114_sh --shdb amartin_sortinghat_openstack --output openstack
+## grimoire-ng-data.py --user jgb --passwd XXX --scmdb dic_cvsanaly_openstack_4114_sh --shdb amartin_sortinghat_openstack --prjdb amartin_projects_openstack_sh --output openstack
 
 ## grimoire-ng-data.py --user root --port 3308 --scmdb amartin_cvsanaly_openstack_sh --shdb amartin_sortinghat_openstack_sh --prjdb amartin_projects_openstack_sh --allbranches --elasticsearch http://localhost:9200 scm --since 2015-10-01
 
@@ -33,7 +33,7 @@ from collections import OrderedDict
 import codecs
 import json
 from os.path import join
-from datetime import datetime
+import datetime
 from jsonpickle import encode, set_encoder_options
 import urllib2
 
@@ -106,14 +106,16 @@ def json_serial(obj, dateformat = "iso"):
 
     """
 
-    if isinstance(obj, datetime):
+    if isinstance(obj, datetime.datetime):
         if dateformat == "iso":
             serial = obj.isoformat()
         elif dateformat =="utime":
-            serial = int((obj - datetime(1970,1,1)).total_seconds())
+            serial = int((obj - datetime.datetime(1970,1,1)).total_seconds())
         else:
             raise ValueError ("Unknown format for datetime: " + str(dateformat))
         return serial
+    elif isinstance(obj, datetime.timedelta):
+        return int(obj.total_seconds())
     raise TypeError ("Type not serializable: " + type(obj).__name__)
 
 def json_serial_iso (obj):
@@ -240,6 +242,29 @@ es_scm_mapping = """
 }
 """
 
+es_scr_mapping = """
+{"mappings":
+  {"review":
+    {"properties":
+      {"id":{"type":"long"},
+       "summary":{"type":"string"},
+       "project":{"type":"string",
+                  "index":"not_analyzed"},
+       "submitter":{"type":"long"},
+       "patchsets":{"type":"long"},
+       "status":{"type":"string",
+                 "index":"not_analyzed"},
+       "opened":{"type":"date",
+                 "format":"dateOptionalTime"},
+       "closed":{"type":"date",
+                 "format":"dateOptionalTime"},
+       "timeopen":{"type":"long"}
+      }
+    }
+  }
+}
+"""
+
 def http_put (url, body):
     """Perform HTTP PUT on url.
 
@@ -305,7 +330,7 @@ def es_put_bulk (url, index, type, data, id):
             + ", " + str(batch_pos) + " items)."
         http_put (url + "/_bulk", batch)
 
-def upload_elasticsearch (url, index, data, repos):
+def upload_elasticsearch_scm (url, index, data, repos):
     """Upload data (dataframe) to elasticsearch in url.
 
     :param url: elasticsearch url
@@ -319,7 +344,6 @@ def upload_elasticsearch (url, index, data, repos):
     
     """
     
-    import urllib2
     opener = urllib2.build_opener(urllib2.HTTPHandler)
     # Delete index, just in case
     request = urllib2.Request(url + "/" + index)
@@ -336,17 +360,64 @@ def upload_elasticsearch (url, index, data, repos):
     print response
     es_put_bulk (url, index, 'repo', repos, 'repo_id')
     es_put_bulk (url, index, 'commit', data, 'id')
+
+def upload_elasticsearch_scr (url, index, data):
+    """Upload reviews data (dataframe) to elasticsearch in url.
+
+    :param url: elasticsearch url
+    :type url: str
+    :param index: index name
+    :type index: str
+    :param data: reviews dataframe
+    :type data: pandas.dataframe
     
+    """
+    
+    opener = urllib2.build_opener(urllib2.HTTPHandler)
+    # Delete index, just in case
+    request = urllib2.Request(url + "/" + index)
+    request.get_method = lambda: 'DELETE'
+    try:
+        response = opener.open(request)
+        print "Elasticsearch: index deleted."
+        print response.read()
+    except urllib2.HTTPError as e:
+        if e.code == 404:
+            print "Elasticsearch: index didn't exist."
+    # Create mappings
+    response = http_put (url + "/" + index, es_scr_mapping)
+    print response
+    es_put_bulk (url, index, 'review', data, 'id')
+
 class Database:
     """To work with a database (likely including several schemas).
     """
     
-    def __init__ (self, user, passwd, host, port, scmdb, shdb, prjdb):
+    def __init__ (self, user, passwd, host, port, maindb, shdb, prjdb):
+        """Init state.
+
+        :param user: user for accessing the MySQL database
+        :type user: str or unicode
+        :param passwd: password for the user accessing the MySQL database
+        :type passwd: str or unicode
+        :param host: hostname of the MySQL host
+        :type passwd: str or unicode
+        :param port: port to access MySQL
+        :type port: int
+        :param maindb: main database schema name (scm, src, etc.)
+        :type db: str or unicode
+        :param shdb: SortingHat database schema name
+        :type shdb: str or unicode
+        :param prjdb: projects database schema name
+        :type prjdb: str or unicode
+        
+        """
+        
         self.user = user
         self.passwd = passwd
         self.host = host
         self.port = port
-        self.scmdb = scmdb
+        self.maindb = maindb
         self.shdb = shdb
         self.prjdb = prjdb
         self.db, self.cursor = self._connect()
@@ -367,10 +438,10 @@ class Database:
     def execute(self, query, show = False):
         """Execute an SQL query with the corresponding database.
 
-        The query can be "templated" with {scm_db} and {sh_db}.
+        The query can be "templated" with {main_db} and {sh_db}.
         """
 
-        sql = query.format(scm_db = self.scmdb,
+        sql = query.format(main_db = self.maindb,
                            sh_db = self.shdb,
                            prj_db = self.prjdb)
         if show:
@@ -381,7 +452,6 @@ class Database:
             result1 = self.cursor.fetchall()
             return result1
         else:
-            print results
             return []
 
 def query_reviews (db, verbose):
@@ -389,34 +459,46 @@ def query_reviews (db, verbose):
 
     """
 
-    sql = """select i.issue as gerrit_issue,
-  i.summary as summary,
-  i.submitted_by as changeset_submitter,
-  t2.opening_date as opening_date, 
-  count(distinct(ch.old_value)) as num_patchsets,
-  t.url as gerrit_tracker, 
-  t1.closed_date  as closed_date,
-  timestampdiff(SECOND, t2.opening_date, t1.closed_date) as time2close,
-  i.status as current_status
-from issues i, 
-  trackers t,
-  changes ch,
-  (select i.id as issue_id,
-     ch.changed_on as closed_date
-   from issues i
-   left join changes ch on ch.issue_id = i.id and field='status'
-     and (new_value='ABANDONED' or new_value='MERGED')
+    sql = """SELECT i.issue AS gerrit_issue,
+  i.summary AS summary,
+  t.url AS gerrit_tracker, 
+  i.submitted_by AS changeset_submitter,
+  count(distinct(ch.old_value)) AS num_patchsets,
+  i.status AS current_status,
+  t2.opening_date AS opening_date, 
+  t1.closed_date AS closed_date
+FROM {main_db}.issues i,
+  {main_db}.trackers t,
+  {main_db}.changes ch,
+  (SELECT i.id AS issue_id,
+     ch.changed_on AS closed_date
+   FROM {main_db}.issues i
+   LEFT JOIN {main_db}.changes ch ON ch.issue_id = i.id AND field='status'
+     AND (new_value='ABANDONED' OR new_value='MERGED')
    ) t1, 
-  (select ch.issue_id,
-     ch.changed_on as opening_date
-   from changes ch
-   where ch.field='status' and ch.new_value='UPLOADED' and ch.old_value=1
+  (SELECT ch.issue_id,
+     ch.changed_on AS opening_date
+   FROM {main_db}.changes ch
+   WHERE ch.field='status' AND ch.new_value='UPLOADED' AND ch.old_value=1
    ) t2 
-where i.tracker_id=t.id and ch.issue_id = i.id and i.id=t1.issue_id
-  and i.id=t2.issue_id group by i.issue
+WHERE i.tracker_id=t.id AND ch.issue_id = i.id AND i.id=t1.issue_id
+  AND i.id=t2.issue_id
+GROUP BY i.issue
 """
     reviews = db.execute(sql, verbose)
     return reviews
+
+def query_review_retrieval (db, verbose):
+    """ Execute query to find out the newest time for data retrieval.
+
+    """
+
+    sql = """SELECT MAX(retrieved_on)
+FROM {main_db}.trackers
+"""
+    
+    date = db.execute(sql, verbose)
+    return date[0][0]
 
 def analyze_scr (db, output, elasticsearch,
                  dateformat, verbose):
@@ -425,7 +507,30 @@ def analyze_scr (db, output, elasticsearch,
     """
     
     print "Querying for reviews"
-    persons = query_reviews (db, verbose)
+    retrieval_date = query_review_retrieval (db, verbose)
+    print "Retrieval date:", retrieval_date
+    reviews = query_reviews (db, verbose)
+    reviews_df = pandas.DataFrame(list(reviews),
+                                  columns = ["id", "summary", "project",
+                                             "submitter", "patchsets", "status",
+                                             "opened", "closed"])
+    reviews_df["closed"].fillna(retrieval_date, inplace=True)
+    reviews_df["timeopen"] = reviews_df["closed"] - reviews_df["opened"]
+    print reviews_df
+    if output:
+        print "Producing JSON files in directory: " + output
+        prefix = join (output, "scr-")
+        report = OrderedDict()
+        report[prefix + 'reviews.json'] = reviews_df
+        create_report (report_files = report, destdir = './',
+                       dateformat = dateformat)
+
+    if elasticsearch:
+        (esurl, esindex) = elasticsearch
+        print "Feeding data to elasticsearch at: " + esurl + "/" + esindex
+        upload_elasticsearch_scr (url = esurl,
+                                  index = esindex,
+                                  data = reviews_df)
 
 def query_persons (db, allbranches, since, verbose):
     """ Execute query to select persons."""
@@ -433,19 +538,19 @@ def query_persons (db, allbranches, since, verbose):
     sql = """SELECT uidentities.uuid AS uuid,
   profiles.name AS name,
   profiles.is_bot AS bot
-FROM {scm_db}.scmlog
-  JOIN {scm_db}.people_uidentities
+FROM {main_db}.scmlog
+  JOIN {main_db}.people_uidentities
     ON people_uidentities.people_id = scmlog.author_id
   JOIN {sh_db}.uidentities
     ON uidentities.uuid = people_uidentities.uuid
   LEFT JOIN {sh_db}.profiles
     ON uidentities.uuid = profiles.uuid
-  JOIN {scm_db}.actions
+  JOIN {main_db}.actions
     ON scmlog.id = actions.commit_id
 """
     where = False
     if not allbranches:
-        sql = sql + """JOIN {scm_db}.branches
+        sql = sql + """JOIN {main_db}.branches
     ON branches.id = actions.branch_id 
 WHERE branches.name IN ("master")
 """
@@ -474,8 +579,8 @@ def query_commits (allbranches, since, verbose):
   (((scmlog.author_date_tz DIV 3600) + 36) % 24) - 12 AS tz,
   scmlog.author_date_tz AS tz_orig,
   organizations.name AS org_name
-FROM {scm_db}.scmlog
-  JOIN {scm_db}.people_uidentities
+FROM {main_db}.scmlog
+  JOIN {main_db}.people_uidentities
     ON people_uidentities.people_id = scmlog.author_id
   JOIN {sh_db}.uidentities
     ON uidentities.uuid = people_uidentities.uuid
@@ -485,9 +590,9 @@ FROM {scm_db}.scmlog
     ON enrollments.organization_id = organizations.id
   LEFT JOIN {sh_db}.profiles
     ON uidentities.uuid = profiles.uuid
-  JOIN {scm_db}.actions
+  JOIN {main_db}.actions
     ON scmlog.id = actions.commit_id
-  JOIN {scm_db}.branches
+  JOIN {main_db}.branches
     ON branches.id = actions.branch_id
 """
     if allbranches:
@@ -507,8 +612,8 @@ GROUP BY scmlog.rev ORDER BY scmlog.author_date
 # Query to select organizations
 query_orgs = """SELECT enrollments.organization_id AS org_id,
   {sh_db}.organizations.name AS org_name
-FROM {scm_db}.scmlog
-  JOIN {scm_db}.people_uidentities
+FROM {main_db}.scmlog
+  JOIN {main_db}.people_uidentities
     ON people_uidentities.people_id = scmlog.author_id
   JOIN {sh_db}.uidentities
     ON uidentities.uuid = people_uidentities.uuid
@@ -516,9 +621,9 @@ FROM {scm_db}.scmlog
     ON uidentities.uuid = enrollments.uuid
   JOIN {sh_db}.organizations
     ON enrollments.organization_id = organizations.id
-  JOIN {scm_db}.actions
+  JOIN {main_db}.actions
     ON scmlog.id = actions.commit_id
-  JOIN {scm_db}.branches
+  JOIN {main_db}.branches
     ON branches.id = actions.branch_id 
 WHERE enrollments.start IS NULL OR
   (scmlog.date > enrollments.start AND scmlog.date < enrollments.end)
@@ -531,7 +636,7 @@ query_repos = """SELECT repositories.id AS repo_id,
   repositories.name AS repo_name,
   projects.project_id AS project_id,
   projects.id AS project
-FROM {scm_db}.repositories
+FROM {main_db}.repositories
 LEFT JOIN {prj_db}.project_repositories
   ON repositories.uri = project_repositories.repository_name
     AND repositories.type = "git"
@@ -544,7 +649,7 @@ query_repos_noprojects = """SELECT repositories.id AS repo_id,
   repositories.name AS repo_name,
   0 AS project_id,
   "No project" AS project
-FROM {scm_db}.repositories
+FROM {main_db}.repositories
 ORDER BY repo_id"""
 
 def analyze_scm (db, allbranches, since, output, elasticsearch,
@@ -641,8 +746,7 @@ def analyze_scm (db, allbranches, since, output, elasticsearch,
                        dateformat = dateformat)
 
     if elasticsearch:
-        esurl = elasticsearch[0]
-        esindex  = elasticsearch[1]
+        (esurl, esindex) = elasticsearch
         # Produce comprehensive commits dataframe
         commits_comp_df = pandas.merge (commits_df, repos_df,
                                         left_on="repo_id", right_on="repo_id",
@@ -661,10 +765,10 @@ def analyze_scm (db, allbranches, since, output, elasticsearch,
                                     'org_id', 'org_name', 'repo_id', 'repo_name',
                                     'project_id', 'project_name']]
         print "Feeding data to elasticsearch at: " + esurl + "/" + esindex
-        upload_elasticsearch (url = esurl,
-                              index = esindex,
-                              data = commits_comp_df,
-                              repos = repos_df)
+        upload_elasticsearch_scm (url = esurl,
+                                  index = esindex,
+                                  data = commits_comp_df,
+                                  repos = repos_df)
 
 if __name__ == "__main__":
 
@@ -674,7 +778,7 @@ if __name__ == "__main__":
 
     if args.prjdb:
         print "Using projects database, as specified."
-        prjdb = prjdb
+        prjdb = args.prjdb
     else:
         print "No projects database specified, using SCM database instead."
         prjdb = args.scmdb
@@ -687,7 +791,7 @@ if __name__ == "__main__":
         print "SCM database specified, analyzing it."
         db = Database (user = args.user, passwd = args.passwd,
                        host = args.host, port = args.port,
-                       scmdb = args.scmdb, shdb = args.shdb,
+                       maindb = args.scmdb, shdb = args.shdb,
                        prjdb = prjdb)
         analyze_scm(db = db,
                     allbranches = args.allbranches,
@@ -701,10 +805,13 @@ if __name__ == "__main__":
         print "SCR database specified, analyzing it."
         db = Database (user = args.user, passwd = args.passwd,
                        host = args.host, port = args.port,
-                       scrdb = args.scmdb, shdb = args.shdb,
+                       maindb = args.scrdb, shdb = args.shdb,
                        prjdb = prjdb)
         analyze_scr(db = db,
-                    verbose = args.verbose,
+                    output = args.output,
+                    elasticsearch = args.elasticsearch,
+                    dateformat = dateformat,
+                    verbose = args.verbose
                     )
 
 
