@@ -200,8 +200,7 @@ def create_report (report_files, destdir, dateformat = "utime"):
                          dateformat = dateformat)
 
 
-es_scm_mapping = """
-{"mappings":
+es_scm_mapping_repo = """
   {"repo":
     {"properties":
       {"project_id":{"type":"long"},
@@ -211,8 +210,12 @@ es_scm_mapping = """
        "repo_name":{"type":"string",
                     "index":"not_analyzed"}
       }
-    },
-   "commit":
+    }
+  }
+"""
+
+es_scm_mapping_commits = """
+  {"commit":
     {"properties":
       {"id":{"type":"long"},
        "author_date":{"type":"date",
@@ -239,30 +242,29 @@ es_scm_mapping = """
       }
     }
   }
-}
 """
 
 es_scr_mapping = """
-{"mappings":
   {"review":
     {"properties":
       {"id":{"type":"long"},
+       "review":{"type":"string",
+                  "index":"not_analyzed"},
        "summary":{"type":"string"},
        "project":{"type":"string",
                   "index":"not_analyzed"},
        "submitter":{"type":"long"},
-       "patchsets":{"type":"long"},
        "status":{"type":"string",
                  "index":"not_analyzed"},
        "opened":{"type":"date",
                  "format":"dateOptionalTime"},
        "closed":{"type":"date",
                  "format":"dateOptionalTime"},
-       "timeopen":{"type":"long"}
+       "timeopen":{"type":"long"},
+       "patchsets":{"type":"long"}
       }
     }
   }
-}
 """
 
 def http_put (url, body):
@@ -316,7 +318,7 @@ def es_put_bulk (url, index, type, data, id):
                                              dateformat = "iso") + '\n'
         batch = batch + batch_item
         batch_pos = batch_pos + 1
-        if batch_pos % 1000 == 0:
+        if batch_pos % 10000 == 0:
             print "PUT to " + url + " " + index + "/" + type \
                 + " (batch no: " + str(batch_count) \
                 + ", " + str(batch_pos) + " items)."
@@ -355,9 +357,15 @@ def upload_elasticsearch_scm (url, index, data, repos):
     except urllib2.HTTPError as e:
         if e.code == 404:
             print "Elasticsearch: index didn't exist."
-    # Create mappings
-    response = http_put (url + "/" + index, es_scm_mapping)
+    # Create index
+    response = http_put (url + "/" + index, "")
     print response
+    # Create mappings
+    response = http_put (url + "/" + index + "/_mapping/repo", es_scm_mapping_repo)
+    print response
+    response = http_put (url + "/" + index + "/_mapping/commit", es_scm_mapping_commit)
+    print response
+    # Upload data to indices
     es_put_bulk (url, index, 'repo', repos, 'repo_id')
     es_put_bulk (url, index, 'commit', data, 'id')
 
@@ -384,9 +392,14 @@ def upload_elasticsearch_scr (url, index, data):
     except urllib2.HTTPError as e:
         if e.code == 404:
             print "Elasticsearch: index didn't exist."
-    # Create mappings
-    response = http_put (url + "/" + index, es_scr_mapping)
+    # Create index
+    response = http_put (url + "/" + index, "")
     print response
+    # Create mappings
+    print url + "/" + index
+    response = http_put (url + "/" + index + "/_mapping/review", es_scr_mapping)
+    print response
+    # Upload data to indices
     es_put_bulk (url, index, 'review', data, 'id')
 
 class Database:
@@ -459,34 +472,80 @@ def query_reviews (db, verbose):
 
     """
 
-    sql = """SELECT i.issue AS gerrit_issue,
+#     sql = """SELECT i.issue AS gerrit_issue,
+#   i.summary AS summary,
+#   t.url AS gerrit_tracker, 
+#   i.submitted_by as changeset_submitter,
+#   count(distinct(ch.old_value)) AS num_patchsets,
+#   i.status AS current_status,
+#   t2.opening_date AS opening_date, 
+#   t1.closed_date AS closed_date
+# FROM {main_db}.issues i
+#   JOIN {main_db}.people_uidentities p ON i.submitted_by = p.people_id
+#   JOIN {main_db}.trackers t ON i.tracker_id=t.id
+#   JOIN {main_db}.changes ch ON ch.issue_id = i.id
+#   JOIN (SELECT i.id AS issue_id,
+#      ch.changed_on AS closed_date
+#    FROM {main_db}.issues i
+#    LEFT JOIN {main_db}.changes ch ON ch.issue_id = i.id AND field='status'
+#      AND (new_value='ABANDONED' OR new_value='MERGED')
+#    ) t1 ON i.id=t1.issue_id
+#   JOIN (SELECT ch.issue_id,
+#      ch.changed_on AS opening_date
+#    FROM {main_db}.changes ch
+#    WHERE ch.field='status' AND ch.new_value='UPLOADED' AND ch.old_value=1
+#    ) t2 ON i.id=t2.issue_id
+# GROUP BY i.issue
+# """
+    sql = """SELECT i.id AS id,
+  i.issue AS review,
   i.summary AS summary,
-  t.url AS gerrit_tracker, 
-  i.submitted_by AS changeset_submitter,
-  count(distinct(ch.old_value)) AS num_patchsets,
-  i.status AS current_status,
-  t2.opening_date AS opening_date, 
-  t1.closed_date AS closed_date
-FROM {main_db}.issues i,
-  {main_db}.trackers t,
-  {main_db}.changes ch,
-  (SELECT i.id AS issue_id,
-     ch.changed_on AS closed_date
-   FROM {main_db}.issues i
-   LEFT JOIN {main_db}.changes ch ON ch.issue_id = i.id AND field='status'
-     AND (new_value='ABANDONED' OR new_value='MERGED')
-   ) t1, 
-  (SELECT ch.issue_id,
-     ch.changed_on AS opening_date
-   FROM {main_db}.changes ch
-   WHERE ch.field='status' AND ch.new_value='UPLOADED' AND ch.old_value=1
-   ) t2 
-WHERE i.tracker_id=t.id AND ch.issue_id = i.id AND i.id=t1.issue_id
-  AND i.id=t2.issue_id
+  t.url AS project, 
+  i.submitted_by as submitter,
+  i.status AS status
+FROM {main_db}.issues i
+  JOIN {main_db}.trackers t ON i.tracker_id=t.id
 GROUP BY i.issue
 """
     reviews = db.execute(sql, verbose)
     return reviews
+
+def query_reviews_opened (db, verbose):
+
+    sql = """SELECT issue_id AS id,
+  MAX(changed_on) AS opened
+FROM {main_db}.changes
+WHERE (field='status' AND new_value='UPLOADED' AND old_value=1) OR 
+  (field='Upload')
+GROUP BY issue_id
+"""
+    # A stricter WHERE, but which misses some reviews:
+    # WHERE ((field='status' AND new_value='UPLOADED') OR 
+    #  (field='Upload')) AND old_value=1
+    
+    opened = db.execute(sql, verbose)
+    return opened
+
+def query_reviews_closed (db, verbose):
+
+    sql = """SELECT issue_id AS id,
+  MAX(changed_on) AS closed
+FROM {main_db}.changes
+WHERE field='status' AND (new_value='ABANDONED' OR new_value='MERGED')
+GROUP BY issue_id
+"""
+    closed = db.execute(sql, verbose)
+    return closed
+
+def query_reviews_patchsets (db, verbose):
+
+    sql = """SELECT issue_id AS id,
+  COUNT(DISTINCT(changes.old_value)) AS patchsets
+FROM {main_db}.changes
+GROUP BY issue_id
+"""
+    patchsets = db.execute(sql, verbose)
+    return patchsets
 
 def query_review_retrieval (db, verbose):
     """ Execute query to find out the newest time for data retrieval.
@@ -500,28 +559,74 @@ FROM {main_db}.trackers
     date = db.execute(sql, verbose)
     return date[0][0]
 
+def query_persons_scr (db, verbose):
+    """ Execute query to select persons."""
+
+    sql = """SELECT uidentities.uuid AS uuid,
+  profiles.name AS name,
+  profiles.is_bot AS bot
+FROM {main_db}.issues
+  JOIN {main_db}.people_uidentities
+    ON people_uidentities.people_id = issues.submitted_by
+  JOIN {sh_db}.uidentities
+    ON uidentities.uuid = people_uidentities.uuid
+  LEFT JOIN {sh_db}.profiles
+    ON uidentities.uuid = profiles.uuid
+  GROUP BY uidentities.uuid
+"""
+
+    persons = db.execute(sql, verbose)
+    return persons
+
 def analyze_scr (db, output, elasticsearch,
                  dateformat, verbose):
-    """Analyze SCM database.
+    """Analyze SCR database.
 
     """
-    
-    print "Querying for reviews"
+
+    print "Starting SCR analysis"
     retrieval_date = query_review_retrieval (db, verbose)
     print "Retrieval date:", retrieval_date
+    print "Querying for persons."
+    persons = query_persons_scr (db, verbose)
+    print "Querying for reviews."
     reviews = query_reviews (db, verbose)
     reviews_df = pandas.DataFrame(list(reviews),
-                                  columns = ["id", "summary", "project",
-                                             "submitter", "patchsets", "status",
-                                             "opened", "closed"])
-    reviews_df["closed"].fillna(retrieval_date, inplace=True)
-    reviews_df["timeopen"] = reviews_df["closed"] - reviews_df["opened"]
-    print reviews_df
+                                  columns = ["id", "review", "summary", "project",
+                                             "submitter", "status"])
+    print "reviews_df:", len(reviews_df.index)
+    print "Querying for opened time for reviews."
+    opened = query_reviews_opened (db, verbose)
+    opened_df = pandas.DataFrame(list(opened),
+                                 columns = ["id", "opened"])
+    print "opened_df:", len(opened_df.index)
+    print "Querying for closed time for reviews."
+    closed = query_reviews_closed (db, verbose)
+    closed_df = pandas.DataFrame(list(closed),
+                                 columns = ["id", "closed"])
+    print "closed_df:", len(closed_df.index)
+    print "Querying for number of patchsets for reviews."
+    patchsets = query_reviews_patchsets (db, verbose)
+    patchsets_df = pandas.DataFrame(list(patchsets),
+                                 columns = ["id", "patchsets"])
+    print "patchsets_df:", len(patchsets_df.index)
+    print "Merging into extended reviews dataframe."
+    times_df = pandas.merge (opened_df, closed_df, on="id", how="left")
+    print "times_df:", len(times_df.index)
+    times_df["closed"].fillna(retrieval_date, inplace=True)
+    times_df["timeopen"] = times_df["closed"] - times_df["opened"]
+    print "times_df:", len(times_df.index)
+    extended_df = pandas.merge (reviews_df, times_df, on="id", how="left")
+    print "extended_df:", len(extended_df.index)
+    extended_df = pandas.merge (extended_df, patchsets_df, on="id", how="left")
+    print "extended_df:", len(extended_df.index)
+    print extended_df[extended_df.isnull().any(axis=1)]
+
     if output:
         print "Producing JSON files in directory: " + output
         prefix = join (output, "scr-")
         report = OrderedDict()
-        report[prefix + 'reviews.json'] = reviews_df
+        report[prefix + 'reviews.json'] = extended_df
         create_report (report_files = report, destdir = './',
                        dateformat = dateformat)
 
@@ -530,7 +635,7 @@ def analyze_scr (db, output, elasticsearch,
         print "Feeding data to elasticsearch at: " + esurl + "/" + esindex
         upload_elasticsearch_scr (url = esurl,
                                   index = esindex,
-                                  data = reviews_df)
+                                  data = extended_df)
 
 def query_persons (db, allbranches, since, verbose):
     """ Execute query to select persons."""
