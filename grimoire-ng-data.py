@@ -25,6 +25,8 @@
 
 ## grimoire-ng-data.py --user root --port 3308 --scmdb amartin_cvsanaly_openstack_sh --shdb amartin_sortinghat_openstack_sh --prjdb amartin_projects_openstack_sh --allbranches --elasticsearch http://localhost:9200 scm --since 2015-10-01
 
+## python grimoire-ng-data.py --user root --port 3308 --scmdb amartin_cvsanaly_openstack_sh --scrdb amartin_bicho_gerrit_openstack_sh --shdb amartin_sortinghat_openstack_sh --prjdb amartin_projects_openstack_sh --elasticsearch http://localhost:9200 openstack --verbose
+
 import argparse
 import MySQLdb
 import logging
@@ -73,6 +75,8 @@ def parse_args ():
                         help = "Output directory")
     parser.add_argument("--dateformat",
                         help = "Date format ('utime' or 'iso')")
+    parser.add_argument("--deleteold", action = 'store_true',
+                        help = "Delete old contents in output system")
     parser.add_argument("--verbose", action = 'store_true',
                         help = "Be verbose")
     parser.add_argument("--debug", action = 'store_true',
@@ -200,8 +204,10 @@ def create_report (report_files, destdir, dateformat = "utime"):
         write_file_json (join (destdir, file), report_files[file],
                          dateformat = dateformat)
 
+## Mappings for ElasticSearch
+##
 
-es_scm_mapping_repo = """
+scm_mapping_repo = """
   {"repo":
     {"properties":
       {"project_id":{"type":"long"},
@@ -215,7 +221,7 @@ es_scm_mapping_repo = """
   }
 """
 
-es_scm_mapping_commits = """
+scm_mapping_commit = """
   {"commit":
     {"properties":
       {"id":{"type":"long"},
@@ -240,6 +246,35 @@ es_scm_mapping_commits = """
        "project_id":{"type":"long"},
        "project_name":{"type":"string",
                        "index":"not_analyzed"}
+      }
+    }
+  }
+"""
+
+scr_mapping = """
+  {"review":
+    {"properties":
+      {"id":{"type":"long"},
+       "review":{"type":"string",
+                  "index":"not_analyzed"},
+       "summary":{"type":"string"},
+       "submitter":{"type":"long"},
+       "status":{"type":"string",
+                 "index":"not_analyzed"},
+       "branch":{"type":"string",
+                 "index":"not_analyzed"},
+       "url":{"type":"string",
+              "index":"not_analyzed"},
+       "githash":{"type":"string",
+                  "index":"not_analyzed"},
+       "project":{"type":"string",
+                  "index":"not_analyzed"},
+       "opened":{"type":"date",
+                 "format":"dateOptionalTime"},
+       "closed":{"type":"date",
+                 "format":"dateOptionalTime"},
+       "timeopen":{"type":"long"},
+       "patchsets":{"type":"long"}
       }
     }
   }
@@ -285,8 +320,8 @@ def es_put_bulk (url, index, type, data, id, mapping = None, verbose = False):
     """
 
     if mapping:
-        logging.debug("Creating mappings for index " + index)
-        response = http_put (url + "/" + index + "/_mapping/review", mapping)
+        logging.debug("Creating mappings for index/type " + index + "/" + type)
+        response = http_put (url + "/" + index + "/_mapping/" + type, mapping)
         logging.debug(response)
     index_line = '{{ "index" : {{ "_index" : "{index}", "_type" : "{type}", "_id" : "{id}" }} }}'
     # Upload data using the bulk API
@@ -316,100 +351,51 @@ def es_put_bulk (url, index, type, data, id, mapping = None, verbose = False):
             + ", " + str(batch_pos) + " items).")
         http_put (url + "/_bulk", batch)
 
-def upload_elasticsearch_scm (url, index, data, repos):
-    """Upload data (dataframe) to elasticsearch in url.
-
-    :param url: elasticsearch url
-    :type url: str
-    :param index: index name
-    :type index: str
-    :param data: commits dataframe
-    :type data: pandas.dataframe
-    :param repos: repositories dataframe
-    :type repos: pandas.dataframe
-    
-    """
-    
-    opener = urllib2.build_opener(urllib2.HTTPHandler)
-    # Delete index, just in case
-    request = urllib2.Request(url + "/" + index)
-    request.get_method = lambda: 'DELETE'
-    try:
-        response = opener.open(request)
-        print "Elasticsearch: index deleted."
-        print response.read()
-    except urllib2.HTTPError as e:
-        if e.code == 404:
-            print "Elasticsearch: index didn't exist."
-    # Create index
-    response = http_put (url + "/" + index, "")
-    print response
-    # Create mappings
-    response = http_put (url + "/" + index + "/_mapping/repo", es_scm_mapping_repo)
-    print response
-    response = http_put (url + "/" + index + "/_mapping/commit", es_scm_mapping_commit)
-    print response
-    # Upload data to indices
-    es_put_bulk (url, index, 'repo', repos, 'repo_id')
-    es_put_bulk (url, index, 'commit', data, 'id')
-
-scr_mapping = """
-  {"review":
-    {"properties":
-      {"id":{"type":"long"},
-       "review":{"type":"string",
-                  "index":"not_analyzed"},
-       "summary":{"type":"string"},
-       "submitter":{"type":"long"},
-       "status":{"type":"string",
-                 "index":"not_analyzed"},
-       "branch":{"type":"string",
-                 "index":"not_analyzed"},
-       "url":{"type":"string",
-              "index":"not_analyzed"},
-       "githash":{"type":"string",
-                  "index":"not_analyzed"},
-       "project":{"type":"string",
-                  "index":"not_analyzed"},
-       "opened":{"type":"date",
-                 "format":"dateOptionalTime"},
-       "closed":{"type":"date",
-                 "format":"dateOptionalTime"},
-       "timeopen":{"type":"long"},
-       "patchsets":{"type":"long"}
-      }
-    }
-  }
-"""
-
-def upload_elasticsearch_scr (url, index, data):
+        
+def upload_elasticsearch (url, index, data, deleteold):
     """Upload reviews data (dataframe) to elasticsearch in url.
 
+    The data to upload is a dictionary, with ElasticSearch types as keys,
+    and dataframes to upload for each of those types as vaules. For example:
+      {'reviews': reviews_df, 'commits': commits_df}
+
     :param url: elasticsearch url
     :type url: str
     :param index: index name
     :type index: str
-    :param data: reviews dataframe
-    :type data: pandas.dataframe
-    
+    :param data: dictionary with dataframes to upload
+    :type data: dictionary (keys: type, values: pandas.dataframe)
+    :param deleteold: whether old content (index) should be deleted
+    :type dedleteold: bool
+
     """
     
     opener = urllib2.build_opener(urllib2.HTTPHandler)
-    # Delete index, just in case
-    request = urllib2.Request(url + "/" + index)
-    request.get_method = lambda: 'DELETE'
-    try:
-        response = opener.open(request)
-        logging.info("Elasticsearch: deleting index.")
-        print response.read()
-    except urllib2.HTTPError as e:
-        if e.code == 404:
-            logging.info("Elasticsearch: index didn't exist.")
+    if deleteold:
+        # Delete index
+        request = urllib2.Request(url + "/" + index)
+        request.get_method = lambda: 'DELETE'
+        try:
+            response = opener.open(request)
+            logging.info("ElasticSearch: deleting index.")
+            logging.debug(response.read())
+        except urllib2.HTTPError as e:
+            if e.code == 404:
+                logging.info("ElasticSearch: index didn't exist.")
+            else:
+                logging.info("ElasticSearch: error deleting index: " + str(e.code))
     # Create index
-    response = http_put (url + "/" + index, "")
-    logging.debug(response)
+    logging.info("ElasticSearch: creating index " + index)
+    try:
+        response = http_put (url + "/" + index, "")
+        logging.debug("Elasticsearch index creation, response: " + response)
+    except urllib2.HTTPError as e:
+        logging.info("ElasticSearch: error creating index: " + str(e.code))
     # Upload data to indices
-    es_put_bulk (url, index, 'review', data, 'id', mapping = scr_mapping)
+    for type, to_upload in data.iteritems():
+        es_put_bulk (url = url, index = index, type = type,
+                     data = to_upload['df'], id = to_upload['id'],
+                     mapping = to_upload['mapping'])
 
 class Database:
     """To work with a database (likely including several schemas).
@@ -475,21 +461,29 @@ class Database:
         else:
             return ([], [])
 
-    def execute_df(self, query, name = ""):
+    def execute_df(self, query, name = "", other = []):
         """Execute an SQL query with the corresponding database, return dataframe.
 
         The query can be "templated" with {main_db} and {sh_db}.
+
+        The "other" parameter is a list with rows to be added to the dataframe,
+        in addition to those obtained from the database. Each element in
+        that list is a tuple with the fields (in the same order than they
+        are received from the database) in the row.
 
         :param query: SQL query to execute
         :type query: str
         :param name: name of the results (for humans)
         :type name: str
+        :param other: list of other rows that should be inclued in the dataframe
+        :type other: list of rows
 
         """
 
         logging.debug(name + " querying...")
         (results, fields) = self.execute(query)
-        results_df = pandas.DataFrame(list(results), columns = fields)
+        results_df = pandas.DataFrame(other + list(results),
+                                      columns = fields)
         logging.info(name + ": " + str(len(results_df.index)))
         return results_df
 
@@ -573,7 +567,7 @@ def analyze_scr (db, output, elasticsearch, dateformat):
     opened_df = db.execute_df(sql_reviews_opened, "Reviews (opened)")
     closed_df = db.execute_df(sql_reviews_closed, "Reviews (closed)")
     patchsets_df = db.execute_df(sql_reviews_patchsets, "Reviews (no. patchsets)")
-    persons_df = db.execute_df(sql_reviews_persons, "Persons submitting reviews")
+    persons_df = db.execute_df(sql_reviews_persons, "Persons (submitting reviews)")
     
     logging.debug("Merging into extended reviews dataframe.")
     times_df = pandas.merge (opened_df, closed_df, on="id", how="left")
@@ -588,6 +582,7 @@ def analyze_scr (db, output, elasticsearch, dateformat):
     logging.debug("extended_df with NaN: " \
                   + str(extended_df[extended_df.isnull().any(axis=1)]))
 
+    es_data = {}
     if output:
         logging.info("Producing JSON files in directory: " + output)
         prefix = join (output, "scr-")
@@ -597,13 +592,11 @@ def analyze_scr (db, output, elasticsearch, dateformat):
                        dateformat = dateformat)
 
     if elasticsearch:
-        (esurl, esindex) = elasticsearch
-        logging.info("Feeding data to elasticsearch at: " + esurl + "/" + esindex)
-        upload_elasticsearch_scr (url = esurl,
-                                  index = esindex,
-                                  data = extended_df)
-
-def query_persons (db, allbranches, since):
+        es_data['review'] = {'df': extended_df, 'id': 'id',
+                             'mapping': scr_mapping}
+    return es_data
+        
+def sql_commits_persons (allbranches, since):
     """ Execute query to select persons."""
 
     sql = """SELECT uidentities.uuid AS uuid,
@@ -632,16 +625,15 @@ WHERE branches.name IN ("master")
         else:
             sql = sql + 'WHERE scmlog.author_date >= "' + since + '" '
     sql = sql + "GROUP BY uidentities.uuid"
-    persons = db.execute(sql)
-    return persons
+    return sql
 
-def query_commits (allbranches, since):
-    """Execute query to select commits."""
+def sql_commits (allbranches, since):
+    """Produce SQL query to select commits."""
 
     sql = """SELECT scmlog.id AS id, 
   scmlog.author_date AS date,
   scmlog.date AS commit_date,
-  uidentities.uuid AS person_id,
+  uidentities.uuid AS author_uuid,
   profiles.name AS name,
   enrollments.organization_id AS org_id,
   scmlog.repository_id AS repo_id,
@@ -649,6 +641,9 @@ def query_commits (allbranches, since):
   scmlog.rev as hash,
   (((scmlog.author_date_tz DIV 3600) + 36) % 24) - 12 AS tz,
   scmlog.author_date_tz AS tz_orig,
+  DATE_SUB(scmlog.author_date, INTERVAL scmlog.author_date_tz SECOND)
+    AS utc_author,
+  DATE_SUB(scmlog.date, INTERVAL scmlog.date_tz SECOND) AS utc_commit,
   organizations.name AS org_name
 FROM {main_db}.scmlog
   JOIN {main_db}.people_uidentities
@@ -677,11 +672,10 @@ FROM {main_db}.scmlog
     (scmlog.date > enrollments.start AND scmlog.date < enrollments.end))
 GROUP BY scmlog.rev ORDER BY scmlog.author_date
 """
-    commits = db.execute(sql)
-    return commits
+    return sql
 
 # Query to select organizations
-query_orgs = """SELECT enrollments.organization_id AS org_id,
+sql_commits_orgs = """SELECT enrollments.organization_id AS org_id,
   {sh_db}.organizations.name AS org_name
 FROM {main_db}.scmlog
   JOIN {main_db}.people_uidentities
@@ -703,10 +697,10 @@ GROUP BY org_id"""
 #  ORDER BY repo_id should not be needed, but there are some double
 #  entries in project_repositories table, at least in OpenStack, which
 #  cause dupped entries for repositories.
-query_repos = """SELECT repositories.id AS repo_id,
+sql_commits_repos = """SELECT repositories.id AS repo_id,
   repositories.name AS repo_name,
   projects.project_id AS project_id,
-  projects.id AS project
+  projects.id AS project_name
 FROM {main_db}.repositories
 LEFT JOIN {prj_db}.project_repositories
   ON repositories.uri = project_repositories.repository_name
@@ -716,15 +710,15 @@ LEFT JOIN {prj_db}.projects
 GROUP BY repo_id ORDER BY repo_id"""
 
 # Query to select repositories when there are no projects tables
-query_repos_noprojects = """SELECT repositories.id AS repo_id,
+sql_commits_repos_noproj = """SELECT repositories.id AS repo_id,
   repositories.name AS repo_name,
   0 AS project_id,
-  "No project" AS project
+  "No project" AS project_name
 FROM {main_db}.repositories
 ORDER BY repo_id"""
 
 def analyze_scm (db, allbranches, since, output, elasticsearch,
-                 dateformat, verbose):
+                 dateformat):
     """Analyze SCM database.
 
     """
@@ -740,60 +734,43 @@ def analyze_scm (db, allbranches, since, output, elasticsearch,
     else:
         logging.info("Analyzing since the first commit.")
 
-    logging.debug("Querying for persons")
-    persons = query_persons (db, allbranches, since)
-    logging.debug("Querying for organizations")
-    orgs = db.execute(query_orgs)
-    logging.debug("Querying for commits")
-    commits = query_commits (allbranches, since)
-    # Produce repos data, with or without projects, depending
-    # on the availability of the projects table
-    print "Querying for repositories"
-    try:
-        check = db.execute("SELECT 1 FROM {prj_db}.projects LIMIT 1", verbose)
-        projects_exist = True
-    except _mysql_exceptions.ProgrammingError, e:
-        if e[0] == 1146:
-            projects_exist = False
-        else:
-            raise
-    if projects_exist:
-        print "Projects tables found, producing projects information."
-        repos = db.execute(query_repos)
-    else:
-        print "No projects tables, producing just one project"
-        repos = db.execute(query_repos_noprojects)
-
-    # Produce commits data
-    print "Commits: ", len(commits)
-    commits_df = pandas.DataFrame(list(commits), columns=["id", "date", "commit_date", "author_uuid", "name", "org_id", "repo_id", "message", "hash", "tz", "tz_orig", "org_name"])
+    # Commits
+    commits_df = db.execute_df(sql_commits(allbranches, since),
+                               "Commits")
     commits_df["org_id"].fillna(0, inplace=True)
     # None (NaN) is treated as float, making all the column float, convert to int
     commits_df["org_id"] = commits_df["org_id"].astype("int")
     commits_df["org_name"].fillna("Unknown", inplace=True)
     commits_df["author_name"] = commits_df["name"]
     commits_df["name"] = commits_df["name"] + " (" + commits_df["org_name"] + ")"
-
-    print "Organizations: ", len(orgs)
-    orgs_df = pandas.DataFrame([(0,"Unknown"),] + list(orgs),
-                               columns=["org_id", "org_name"])
-    
-    print "Repositories: ", len(repos)
-    repos_df = pandas.DataFrame(list(repos),
-                                columns=["repo_id", "repo_name",
-                                         "project_id", "project_name"])
+    # Persons
+    persons_df = db.execute_df(sql_commits_persons(allbranches, since),
+                               "Persons (authoring commits)")
+    persons_df["id"] = persons_df.index
+    # Organizations
+    orgs_df = db.execute_df(query = sql_commits_orgs,
+                            name = "Organizations (authoring commits)",
+                            other = [(0,"Unknown"),])
+    # Produce repos data, with or without projects, depending
+    # on the availability of the projects table
+    try:
+        check = db.execute("SELECT 1 FROM {prj_db}.projects LIMIT 1")
+        logging.info("Projects tables found, producing projects information.")
+        sql_repos = sql_commits_repos
+    except _mysql_exceptions.ProgrammingError, e:
+        if e[0] == 1146:
+            logging.info("No projects tables, producing just one project")
+            sql_repos = sql_commits_repos_noproj
+        else:
+            raise
+    repos_df = db.execute_df(sql_repos, "Projects (commits)")
     repos_df["project_id"].fillna(0, inplace=True)
     # None (NaN) is treated as float, making all the column float, convert to int
     repos_df["project_id"] = repos_df["project_id"].astype("int")
     repos_df["project_name"].fillna("No project", inplace=True)
-    
     # Capitalizing could be a good idea, but not by default.
     # repos_df["repo_name"] = repos_df["repo_name"].str.capitalize()
     # repos_df["project_name"] = repos_df["project_name"].str.capitalize()
-
-    print "Persons: ", len(persons)
-    persons_df = pandas.DataFrame(list(persons), columns=["uuid", "name", "bot"])
-    persons_df["id"] = persons_df.index
 
     # Produce packed (minimal) commits dataframe
     commits_pkd_df = pandas.merge (commits_df, persons_df,
@@ -805,8 +782,9 @@ def analyze_scm (db, allbranches, since, output, elasticsearch,
     # Produce messages and hashes dataframe for commits
     commits_messages_df = commits_df[["id", "message", "hash"]]
 
+    es_data = {}
     if output:
-        print "Producing JSON files in directory: " + output
+        logging.info("Producing JSON files in directory: " + output)
         prefix = join (output, "scm-")
         report = OrderedDict()
         report[prefix + 'commits.json'] = commits_pkd_df
@@ -837,11 +815,11 @@ def analyze_scm (db, allbranches, since, output, elasticsearch,
                                     'author_uuid', 'author_name', 'bot', 
                                     'org_id', 'org_name', 'repo_id', 'repo_name',
                                     'project_id', 'project_name']]
-        print "Feeding data to elasticsearch at: " + esurl + "/" + esindex
-        upload_elasticsearch_scm (url = esurl,
-                                  index = esindex,
-                                  data = commits_comp_df,
-                                  repos = repos_df)
+        es_data['repo'] = {'df': repos_df, 'id': 'repo_id',
+                           'mapping': scm_mapping_repo}
+        es_data['commit'] = {'df': commits_comp_df, 'id': 'id',
+                             'mapping': scm_mapping_commit}
+    return es_data
 
 if __name__ == "__main__":
 
@@ -853,6 +831,10 @@ if __name__ == "__main__":
         logging.basicConfig(level=logging.DEBUG)
     elif args.verbose:
         logging.basicConfig(level=logging.INFO)
+    if args.deleteold:
+        deleteold = True
+    else:
+        deleteold = False
     if args.prjdb:
         logging.info("Using projects database, as specified.")
         prjdb = args.prjdb
@@ -864,31 +846,38 @@ if __name__ == "__main__":
     else:
         dateformat = "utime"
 
+    # Data to upload to ElasticSearch
+    es_data = {}
     if args.scmdb:
         logging.info("SCM database specified, analyzing it.")
         db = Database (user = args.user, passwd = args.passwd,
                        host = args.host, port = args.port,
                        maindb = args.scmdb, shdb = args.shdb,
                        prjdb = prjdb)
-        analyze_scm(db = db,
-                    allbranches = args.allbranches,
-                    since = args.since,
-                    output = args.output,
-                    elasticsearch = args.elasticsearch,
-                    dateformat = dateformat,
-                    verbose = args.verbose,
-                    )
+        es_scm = analyze_scm(db = db,
+                             allbranches = args.allbranches,
+                             since = args.since,
+                             output = args.output,
+                             elasticsearch = args.elasticsearch,
+                             dateformat = dateformat)
+        for index, to_upload in es_scm.iteritems():
+            es_data[index] = to_upload
     if args.scrdb:
         logging.info("SCR database specified, analyzing it.")
         db = Database (user = args.user, passwd = args.passwd,
                        host = args.host, port = args.port,
                        maindb = args.scrdb, shdb = args.shdb,
                        prjdb = prjdb)
-        analyze_scr(db = db,
-                    output = args.output,
-                    elasticsearch = args.elasticsearch,
-                    dateformat = dateformat
-                    )
-
-
-
+        es_scr = analyze_scr(db = db,
+                              output = args.output,
+                              elasticsearch = args.elasticsearch,
+                              dateformat = dateformat)
+        for index, to_upload in es_scr.iteritems():
+            es_data[index] = to_upload
+    if args.elasticsearch:
+        (esurl, esindex) = args.elasticsearch
+        logging.info("Feeding data to elasticsearch at: " + esurl + "/" + esindex)
+        upload_elasticsearch (url = esurl,
+                              index = esindex,
+                              data = es_data,
+                              deleteold = deleteold)
