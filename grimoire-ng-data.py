@@ -37,6 +37,7 @@ import json
 from os.path import join
 import datetime
 import urllib2
+import base64
 
 description = """
 Produce JSON files needed by a GrimoireNG dashboard.
@@ -90,6 +91,9 @@ def parse_args ():
     parser.add_argument("--elasticsearch", nargs=2,
                         help = "Url of elasticsearch, and index to use " + \
                         "(eg: http://localhost:9200 project)")
+    parser.add_argument("--esauth", nargs=2,
+                        help = "Authentication to access ElasticSearch" + \
+                        "(eg: user password)")
     
     args = parser.parse_args()
     return args
@@ -229,6 +233,10 @@ scm_mapping_commit = """
                       "format":"dateOptionalTime"},
        "commit_date":{"type":"date",
                       "format":"dateOptionalTime"},
+       "utc_author":{"type":"date",
+                     "format":"dateOptionalTime"},
+       "utc_commit":{"type":"date",
+                     "format":"dateOptionalTime"},
        "message":{"type":"string"},
        "hash":{"type":"string",
                "index":"not_analyzed"},
@@ -280,13 +288,41 @@ scr_mapping = """
   }
 """
 
-def http_put (url, body):
+def http_delete (url, auth):
+    """Perform HTTP DELETE on url.
+
+    :param url: url
+    :type url: str
+    :param auth: authentication data (list with user and password)
+    :type auth: list of str
+    :returns body of the HTTP response
+    :rtype str
+
+    """
+
+    opener = urllib2.build_opener(urllib2.HTTPHandler)
+    request = urllib2.Request(url)
+    request.get_method = lambda: 'DELETE'
+    try:
+        response = opener.open(request)
+        logging.debug(response.read())
+        return response.read()
+    except urllib2.HTTPError as e:
+        if e.code == 404:
+            logging.info("ElasticSearch: resource to DELETE didn't exist")
+        else:
+            logging.info("ElasticSearch: error DELETEing: " + str(e.code))
+        return ""
+
+def http_put (url, body, auth):
     """Perform HTTP PUT on url.
 
     :param url: url
     :type url: str
     :param body: body of the HTTP request (content to upload)
     :type body: str
+    :param auth: authentication data (list with user and password)
+    :type auth: list of str
     :returns body of the HTTP response
     :rtype str
 
@@ -294,11 +330,20 @@ def http_put (url, body):
 
     opener = urllib2.build_opener(urllib2.HTTPHandler)
     request = urllib2.Request(url, data=body)
+    if auth:
+        user = auth[0]
+        passwd = auth[1]
+        #    user = "readwrite"
+        #    passwd = "fl2pnab465"
+        base64string = base64.encodestring(
+            '%s:%s' % (user, passwd))[:-1]
+        authheader =  "Basic %s" % base64string
+        request.add_header("Authorization", authheader)
     request.get_method = lambda: 'PUT'
     response = opener.open(request)
     return response.read()
 
-def es_put_bulk (url, index, type, data, id, mapping = None, verbose = False):
+def es_put_bulk (url, index, type, data, id, mapping = None, auth = None):
     """Use HTTP PUT, via bulk API, to upload documents to Elasticsearch.
 
     Uploads a dataframe, assuming each row is a document, to the specified
@@ -316,12 +361,15 @@ def es_put_bulk (url, index, type, data, id, mapping = None, verbose = False):
     :type id: str
     :param mapping: mapping JSON for index
     :type mapping: str
+    :param auth: authentication data (list with user and password)
+    :type auth: list of str
 
     """
 
     if mapping:
         logging.debug("Creating mappings for index/type " + index + "/" + type)
-        response = http_put (url + "/" + index + "/_mapping/" + type, mapping)
+        response = http_put (url + "/" + index + "/_mapping/" + type,
+                             mapping, auth = auth)
         logging.debug(response)
     index_line = '{{ "index" : {{ "_index" : "{index}", "_type" : "{type}", "_id" : "{id}" }} }}'
     # Upload data using the bulk API
@@ -341,7 +389,7 @@ def es_put_bulk (url, index, type, data, id, mapping = None, verbose = False):
             logging.info("PUT to " + url + " " + index + "/" + type \
                 + " (batch no: " + str(batch_count) \
                 + ", " + str(batch_pos) + " items).")
-            http_put (url + "/_bulk", batch)
+            http_put (url + "/_bulk", batch, auth = auth)
             batch_pos = 0
             batch_count = batch_count + 1
             batch = ""
@@ -349,10 +397,10 @@ def es_put_bulk (url, index, type, data, id, mapping = None, verbose = False):
         logging.info("PUT to " + url + " " + index + "/" + type \
             + " (batch no: " + str(batch_count) \
             + ", " + str(batch_pos) + " items).")
-        http_put (url + "/_bulk", batch)
+        http_put (url + "/_bulk", batch, auth = auth)
 
-        
-def upload_elasticsearch (url, index, data, deleteold):
+  
+def upload_elasticsearch (url, index, data, deleteold, auth):
     """Upload reviews data (dataframe) to elasticsearch in url.
 
     The data to upload is a dictionary, with ElasticSearch types as keys,
@@ -367,27 +415,19 @@ def upload_elasticsearch (url, index, data, deleteold):
     :type data: dictionary (keys: type, values: pandas.dataframe)
     :param deleteold: whether old content (index) should be deleted
     :type dedleteold: bool
+    :param auth: authentication data (list with user and password)
+    :type auth: list of str
 
     """
     
-    opener = urllib2.build_opener(urllib2.HTTPHandler)
     if deleteold:
-        # Delete index
-        request = urllib2.Request(url + "/" + index)
-        request.get_method = lambda: 'DELETE'
-        try:
-            response = opener.open(request)
-            logging.info("ElasticSearch: deleting index.")
-            logging.debug(response.read())
-        except urllib2.HTTPError as e:
-            if e.code == 404:
-                logging.info("ElasticSearch: index didn't exist.")
-            else:
-                logging.info("ElasticSearch: error deleting index: " + str(e.code))
+        logging.info("ElasticSearch: deleting index.")
+        response = http_delete (url = url + "/" + index, auth = auth)
+        logging.debug(response)
     # Create index
     logging.info("ElasticSearch: creating index " + index)
     try:
-        response = http_put (url + "/" + index, "")
+        response = http_put (url + "/" + index, "", auth = auth)
         logging.debug("Elasticsearch index creation, response: " + response)
     except urllib2.HTTPError as e:
         logging.info("ElasticSearch: error creating index: " + str(e.code))
@@ -395,7 +435,8 @@ def upload_elasticsearch (url, index, data, deleteold):
     for type, to_upload in data.iteritems():
         es_put_bulk (url = url, index = index, type = type,
                      data = to_upload['df'], id = to_upload['id'],
-                     mapping = to_upload['mapping'])
+                     mapping = to_upload['mapping'],
+                     auth = auth)
 
 class Database:
     """To work with a database (likely including several schemas).
@@ -524,6 +565,7 @@ GROUP BY issue_id
 sql_reviews_patchsets = """SELECT issue_id AS id,
   COUNT(DISTINCT(changes.old_value)) AS patchsets
 FROM {main_db}.changes
+WHERE changes.old_value != ""
 GROUP BY issue_id
 """
 
@@ -572,7 +614,7 @@ def analyze_scr (db, output, elasticsearch, dateformat):
     logging.debug("Merging into extended reviews dataframe.")
     times_df = pandas.merge (opened_df, closed_df, on="id", how="left")
     times_df["closed"].fillna(retrieval_date, inplace=True)
-    times_df["timeopen"] = times_df["closed"] - times_df["opened"]
+    times_df["timeopen"] = (times_df["closed"] - times_df["opened"]) / (3600 * 24)
     logging.info("Reviews with timing: " + str(len(times_df.index)))
 
     extended_df = pandas.merge (reviews_df, extra_df, on="id", how="left")
@@ -806,11 +848,13 @@ def analyze_scm (db, allbranches, since, output, elasticsearch,
                                         left_on="author_uuid", right_on="uuid",
                                         how="left")
         commits_comp_df = \
-            commits_comp_df [['id_x', 'date', 'commit_date', 'message', 'hash', 'tz',
+            commits_comp_df [['id_x', 'date', 'commit_date',
+                              'utc_author', 'utc_commit', 'message', 'hash', 'tz',
                               'author_uuid', 'author_name', 'bot',
                               'org_id', 'org_name', 'repo_id', 'repo_name',
                               'project_id', 'project_name']]
         commits_comp_df.columns = [['id', 'author_date', 'commit_date',
+                                    'utc_author', 'utc_commit',
                                     'message', 'hash', 'tz',
                                     'author_uuid', 'author_name', 'bot', 
                                     'org_id', 'org_name', 'repo_id', 'repo_name',
@@ -876,8 +920,13 @@ if __name__ == "__main__":
             es_data[index] = to_upload
     if args.elasticsearch:
         (esurl, esindex) = args.elasticsearch
+        if args.esauth:
+            esauth = args.esauth
+        else:
+            esauth = None
         logging.info("Feeding data to elasticsearch at: " + esurl + "/" + esindex)
         upload_elasticsearch (url = esurl,
                               index = esindex,
                               data = es_data,
-                              deleteold = deleteold)
+                              deleteold = deleteold,
+                              auth = esauth)
