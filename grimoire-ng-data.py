@@ -27,6 +27,8 @@
 
 ## python grimoire-ng-data.py --user root --port 3308 --scmdb amartin_cvsanaly_openstack_sh --scrdb amartin_bicho_gerrit_openstack_sh --shdb amartin_sortinghat_openstack_sh --prjdb amartin_projects_openstack_sh --elasticsearch http://localhost:9200 openstack --verbose
 
+## python grimoire-ng-data.py --user root --port 3308 --scmdb amartin_cvsanaly_openstack_sh --scrdb amartin_bicho_gerrit_openstack_sh --shdb amartin_sortinghat_openstack_sh --prjdb amartin_projects_openstack_sh --elasticsearch https://789ba13a7edced40de95ef091ac591d3.us-east-1.aws.found.io:9243 openstack --esauth readwrite XXX --verbose
+
 import argparse
 import MySQLdb
 import logging
@@ -259,7 +261,7 @@ scm_mapping_commit = """
   }
 """
 
-scr_mapping = """
+scr_mapping_review = """
   {"review":
     {"properties":
       {"id":{"type":"long"},
@@ -269,6 +271,8 @@ scr_mapping = """
        "submitter":{"type":"long"},
        "status":{"type":"string",
                  "index":"not_analyzed"},
+       "uuid":{"type":"string",
+               "index":"not_analyzed"},
        "branch":{"type":"string",
                  "index":"not_analyzed"},
        "url":{"type":"string",
@@ -282,7 +286,30 @@ scr_mapping = """
        "closed":{"type":"date",
                  "format":"dateOptionalTime"},
        "timeopen":{"type":"long"},
-       "patchsets":{"type":"long"}
+       "patchsets":{"type":"long"},
+       "name":{"type":"string",
+               "index":"not_analyzed"},
+       "bot":{"type":"integer"}
+      }
+    }
+  }
+"""
+
+scr_mapping_event = """
+  {"event":
+    {"properties":
+      {"id":{"type":"long"},
+       "review":{"type":"string",
+                  "index":"not_analyzed"},
+       "uuid":{"type":"string",
+               "index":"not_analyzed"},
+       "field":{"type":"string",
+                "index":"not_analyzed"},
+       "patchset":{"type":"integer"},
+       "tag":{"type":"string",
+              "index":"not_analyzed"},
+       "event_date":{"type":"date",
+                     "format":"dateOptionalTime"}
       }
     }
   }
@@ -533,9 +560,11 @@ sql_reviews = """SELECT i.id AS id,
   i.issue AS review,
   i.summary AS summary,
   i.submitted_by as submitter,
-  i.status AS status
+  i.status AS status,
+  pu.uuid AS uuid
 FROM {main_db}.issues i
-  JOIN {main_db}.trackers t ON i.tracker_id=t.id
+  JOIN {main_db}.trackers t ON i.tracker_id = t.id
+  JOIN {main_db}.people_uidentities pu ON i.submitted_by = pu.people_id
 GROUP BY i.issue
 """
 
@@ -582,6 +611,33 @@ FROM {main_db}.issues
   GROUP BY uidentities.uuid
 """
 
+sql_reviews_events = """SELECT c.id AS id,
+  i.issue AS review,
+  pup.uuid AS uuid, 
+  c.field AS field,
+  c.old_value AS patchset,
+  c.new_value AS tag,
+  c.changed_on AS event_date
+FROM {main_db}.changes c
+  JOIN {main_db}.issues i ON i.id = c.issue_id 
+  JOIN {main_db}.people_uidentities pup ON c.changed_by = pup.people_id
+WHERE field <> 'Upload'
+ORDER BY review, patchset, event_date
+"""
+
+sql_reviews_events_persons = """SELECT uidentities.uuid AS uuid,
+  profiles.name AS name,
+  profiles.is_bot AS bot
+FROM {main_db}.changes
+  JOIN {main_db}.people_uidentities
+    ON people_uidentities.people_id = changes.changed_by
+  JOIN {sh_db}.uidentities
+    ON uidentities.uuid = people_uidentities.uuid
+  LEFT JOIN {sh_db}.profiles
+    ON uidentities.uuid = profiles.uuid
+  GROUP BY uidentities.uuid
+"""
+
 def query_review_retrieval (db):
     """ Execute query to find out the newest time for data retrieval.
 
@@ -610,7 +666,10 @@ def analyze_scr (db, output, elasticsearch, dateformat):
     closed_df = db.execute_df(sql_reviews_closed, "Reviews (closed)")
     patchsets_df = db.execute_df(sql_reviews_patchsets, "Reviews (no. patchsets)")
     persons_df = db.execute_df(sql_reviews_persons, "Persons (submitting reviews)")
-    
+    events_df = db.execute_df(sql_reviews_events, "Events involving reviews")
+    persons_events_df = db.execute_df(sql_reviews_events_persons,
+                              "Persons (producing events)")
+
     logging.debug("Merging into extended reviews dataframe.")
     times_df = pandas.merge (opened_df, closed_df, on="id", how="left")
     times_df["closed"].fillna(retrieval_date, inplace=True)
@@ -620,10 +679,17 @@ def analyze_scr (db, output, elasticsearch, dateformat):
     extended_df = pandas.merge (reviews_df, extra_df, on="id", how="left")
     extended_df = pandas.merge (extended_df, times_df, on="id", how="left")
     extended_df = pandas.merge (extended_df, patchsets_df, on="id", how="left")
+    extended_df = pandas.merge (extended_df, persons_df, on="uuid", how="left")
     logging.info("Reviews with extended info: " + str(len(extended_df.index)))
     logging.debug("extended_df with NaN: " \
                   + str(extended_df[extended_df.isnull().any(axis=1)]))
 
+    events_extended_df = pandas.merge (events_df, persons_events_df,
+                                       on="uuid", how="left")
+    logging.info("Events with extended info: " \
+                 + str(len(events_extended_df.index)))
+    logging.info("events_extended_df with NaN: " \
+                  + str(events_extended_df[events_extended_df.isnull().any(axis=1)]))
     es_data = {}
     if output:
         logging.info("Producing JSON files in directory: " + output)
@@ -635,7 +701,9 @@ def analyze_scr (db, output, elasticsearch, dateformat):
 
     if elasticsearch:
         es_data['review'] = {'df': extended_df, 'id': 'id',
-                             'mapping': scr_mapping}
+                             'mapping': scr_mapping_review}
+        es_data['event'] = {'df': events_df, 'id': 'id',
+                             'mapping': scr_mapping_event}
     return es_data
         
 def sql_commits_persons (allbranches, since):
