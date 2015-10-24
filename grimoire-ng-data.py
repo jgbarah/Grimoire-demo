@@ -289,7 +289,7 @@ scr_mapping_review = """
        "patchsets":{"type":"long"},
        "name":{"type":"string",
                "index":"not_analyzed"},
-       "bot":{"type":"integer"}
+       "bot":{"type":"long"}
       }
     }
   }
@@ -309,7 +309,22 @@ scr_mapping_event = """
        "tag":{"type":"string",
               "index":"not_analyzed"},
        "event_date":{"type":"date",
-                     "format":"dateOptionalTime"}
+                     "format":"dateOptionalTime"},
+       "name":{"type":"string",
+               "index":"not_analyzed"},
+       "bot":{"type":"long"},
+       "opened":{"type":"date",
+                 "format":"dateOptionalTime"},
+       "closed":{"type":"date",
+                 "format":"dateOptionalTime"},
+       "branch":{"type":"string",
+                 "index":"not_analyzed"},
+       "project":{"type":"string",
+                  "index":"not_analyzed"},
+       "patchsets":{"type":"long"},
+       "status":{"type":"string",
+                 "index":"not_analyzed"},
+       "timeopen":{"type":"long"}
       }
     }
   }
@@ -360,8 +375,6 @@ def http_put (url, body, auth):
     if auth:
         user = auth[0]
         passwd = auth[1]
-        #    user = "readwrite"
-        #    passwd = "fl2pnab465"
         base64string = base64.encodestring(
             '%s:%s' % (user, passwd))[:-1]
         authheader =  "Basic %s" % base64string
@@ -415,7 +428,8 @@ def es_put_bulk (url, index, type, data, id, mapping = None, auth = None):
         if batch_pos % 10000 == 0:
             logging.info("PUT to " + url + " " + index + "/" + type \
                 + " (batch no: " + str(batch_count) \
-                + ", " + str(batch_pos) + " items).")
+                         + ", " + str(batch_pos) + " items, " \
+                         + str(len(batch)) + " bytes).")
             http_put (url + "/_bulk", batch, auth = auth)
             batch_pos = 0
             batch_count = batch_count + 1
@@ -686,6 +700,12 @@ def analyze_scr (db, output, elasticsearch, dateformat):
 
     events_extended_df = pandas.merge (events_df, persons_events_df,
                                        on="uuid", how="left")
+    events_extended_df = pandas.merge (events_extended_df,
+                                       extended_df[["review","opened","closed",
+                                                   "branch","project",
+                                                   "patchsets","status",
+                                                   "timeopen"]],
+                                       on="review", how="left")
     logging.info("Events with extended info: " \
                  + str(len(events_extended_df.index)))
     logging.info("events_extended_df with NaN: " \
@@ -702,7 +722,7 @@ def analyze_scr (db, output, elasticsearch, dateformat):
     if elasticsearch:
         es_data['review'] = {'df': extended_df, 'id': 'id',
                              'mapping': scr_mapping_review}
-        es_data['event'] = {'df': events_df, 'id': 'id',
+        es_data['event'] = {'df': events_extended_df, 'id': 'id',
                              'mapping': scr_mapping_event}
     return es_data
         
