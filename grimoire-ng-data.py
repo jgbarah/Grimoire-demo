@@ -344,17 +344,26 @@ def http_delete (url, auth):
 
     opener = urllib2.build_opener(urllib2.HTTPHandler)
     request = urllib2.Request(url)
+    if auth:
+        user = auth[0]
+        passwd = auth[1]
+        base64string = base64.encodestring(
+            '%s:%s' % (user, passwd))[:-1]
+        authheader =  "Basic %s" % base64string
+        request.add_header("Authorization", authheader)
     request.get_method = lambda: 'DELETE'
     try:
         response = opener.open(request)
-        logging.debug(response.read())
-        return response.read()
+        result = response.read()
+        logging.debug(result)
     except urllib2.HTTPError as e:
         if e.code == 404:
             logging.info("ElasticSearch: resource to DELETE didn't exist")
         else:
             logging.info("ElasticSearch: error DELETEing: " + str(e.code))
-        return ""
+        logging.info(e.read())
+        result = ""
+    return result
 
 def http_put (url, body, auth):
     """Perform HTTP PUT on url.
@@ -380,8 +389,16 @@ def http_put (url, body, auth):
         authheader =  "Basic %s" % base64string
         request.add_header("Authorization", authheader)
     request.get_method = lambda: 'PUT'
-    response = opener.open(request)
-    return response.read()
+    try:
+        response = opener.open(request)
+        result = response.read()
+        logging.debug(result)
+        return result
+    except urllib2.HTTPError as e:
+        logging.info("ElasticSearch: error PUTing: " + str(e.code))
+        logging.info(e.read())
+        raise
+
 
 def es_put_bulk (url, index, type, data, id, mapping = None, auth = None):
     """Use HTTP PUT, via bulk API, to upload documents to Elasticsearch.
