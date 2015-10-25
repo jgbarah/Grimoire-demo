@@ -725,8 +725,9 @@ def analyze_scr (db, output, elasticsearch, dateformat):
                                        on="review", how="left")
     logging.info("Events with extended info: " \
                  + str(len(events_extended_df.index)))
-    logging.info("events_extended_df with NaN: " \
+    logging.info("events_extended_df with NaN (will be dropped): " \
                   + str(events_extended_df[events_extended_df.isnull().any(axis=1)]))
+    events_extended_df = events_extended_df.dropna()
     es_data = {}
     if output:
         logging.info("Producing JSON files in directory: " + output)
