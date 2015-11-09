@@ -553,12 +553,12 @@ class Database:
                            prj_db = self.prjdb)
         logging.debug(sql)
         result_length = int (self.cursor.execute(sql))
+        fields = [i[0] for i in self.cursor.description]
         if result_length > 0:
             results = self.cursor.fetchall()
-            fields = [i[0] for i in self.cursor.description]
-            return (results, fields)
         else:
-            return ([], [])
+            results = []
+        return (results, fields)
 
     def execute_df(self, query, name = "", other = []):
         """Execute an SQL query with the corresponding database, return dataframe.
