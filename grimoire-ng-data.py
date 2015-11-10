@@ -96,6 +96,8 @@ def parse_args ():
     parser.add_argument("--esauth", nargs=2,
                         help = "Authentication to access ElasticSearch" + \
                         "(eg: user password)")
+    parser.add_argument("--dashboard", required = False, default = "Dashboard",
+                        help = "Dashboard name (default: 'Dashboard'")
     
     args = parser.parse_args()
     return args
@@ -255,7 +257,9 @@ scm_mapping_commit = """
                     "index":"not_analyzed"},
        "project_id":{"type":"long"},
        "project_name":{"type":"string",
-                       "index":"not_analyzed"}
+                       "index":"not_analyzed"},
+       "dashboard":{"type":"string",
+                    "index":"not_analyzed"}
       }
     }
   }
@@ -477,7 +481,7 @@ def upload_elasticsearch (url, index, data, deleteold, auth):
     :type auth: list of str
 
     """
-    
+
     if deleteold:
         logging.info("ElasticSearch: deleting index.")
         response = http_delete (url = url + "/" + index, auth = auth)
@@ -682,7 +686,7 @@ FROM {main_db}.trackers
     return date[0][0]
 
 
-def analyze_scr (db, output, elasticsearch, dateformat):
+def analyze_scr (db, output, elasticsearch, dateformat, dashboard):
     """Analyze SCR database.
 
     """
@@ -866,7 +870,7 @@ FROM {main_db}.repositories
 ORDER BY repo_id"""
 
 def analyze_scm (db, allbranches, since, output, elasticsearch,
-                 dateformat):
+                 dateformat, dashboard):
     """Analyze SCM database.
 
     """
@@ -891,6 +895,7 @@ def analyze_scm (db, allbranches, since, output, elasticsearch,
     commits_df["org_name"].fillna("Unknown", inplace=True)
     commits_df["author_name"] = commits_df["name"]
     commits_df["name"] = commits_df["name"] + " (" + commits_df["org_name"] + ")"
+    commits_df["dashboard"] = [dashboard] * len(commits_df["name"])
     # Persons
     persons_df = db.execute_df(sql_commits_persons(allbranches, since),
                                "Persons (authoring commits)")
@@ -958,13 +963,13 @@ def analyze_scm (db, allbranches, since, output, elasticsearch,
                               'utc_author', 'utc_commit', 'message', 'hash', 'tz',
                               'author_uuid', 'author_name', 'bot',
                               'org_id', 'org_name', 'repo_id', 'repo_name',
-                              'project_id', 'project_name']]
+                              'project_id', 'project_name', 'dashboard']]
         commits_comp_df.columns = [['id', 'author_date', 'commit_date',
                                     'utc_author', 'utc_commit',
                                     'message', 'hash', 'tz',
                                     'author_uuid', 'author_name', 'bot', 
                                     'org_id', 'org_name', 'repo_id', 'repo_name',
-                                    'project_id', 'project_name']]
+                                    'project_id', 'project_name', 'dashboard']]
         es_data['repo'] = {'df': repos_df, 'id': 'repo_id',
                            'mapping': scm_mapping_repo}
         es_data['commit'] = {'df': commits_comp_df, 'id': 'id',
@@ -1009,7 +1014,8 @@ if __name__ == "__main__":
                              since = args.since,
                              output = args.output,
                              elasticsearch = args.elasticsearch,
-                             dateformat = dateformat)
+                             dateformat = dateformat,
+                             dashboard = args.dashboard)
         for index, to_upload in es_scm.iteritems():
             es_data[index] = to_upload
     if args.scrdb:
@@ -1019,9 +1025,10 @@ if __name__ == "__main__":
                        maindb = args.scrdb, shdb = args.shdb,
                        prjdb = prjdb)
         es_scr = analyze_scr(db = db,
-                              output = args.output,
-                              elasticsearch = args.elasticsearch,
-                              dateformat = dateformat)
+                             output = args.output,
+                             elasticsearch = args.elasticsearch,
+                             dateformat = dateformat,
+                             dashboard = args.dashboard)
         for index, to_upload in es_scr.iteritems():
             es_data[index] = to_upload
     if args.elasticsearch:
