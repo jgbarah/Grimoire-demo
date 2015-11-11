@@ -76,6 +76,12 @@ def parse_args ():
 if __name__ == "__main__":
     
     args = parse_args()
+
+    if args.debug:
+        logging.basicConfig(level=logging.DEBUG)
+    elif args.verbose:
+        logging.basicConfig(level=logging.INFO)
+
     logging.info("Starting...")
     allbranches = True
     dateformat = "utime"
@@ -88,24 +94,41 @@ if __name__ == "__main__":
         ("ElasticSearch", {"scmdb": "quan_cvsanaly_elastic_6863",
                            "scrdb": None,
                            "shdb": "quan_sortinghat_elastic_6863",
-                           "prjdb": None}),
+                           "prjdb": None,
+                           "port": 3307}),
         ("Kubernetes", {"scmdb": "lcanas_cvsanaly_kubernetes_oscon2015",
                         "scrdb": None,
                         "shdb": "lcanas_sortinghat_kubernetes_oscon2015",
-                        "prjdb": None}),
+                        "prjdb": None,
+                        "port": 3307}),
         ("Docker", {"scmdb": "quan_cvsanaly_docker_6753",
                     "scrdb": None,
                     "shdb": "quan_sortinghat_docker_6753",
-                    "prjdb": None})
+                    "prjdb": None,
+                    "port": 3307}),
+        ("Puppet", {"scmdb": "puppet_2015q3_cvsanaly",
+                    "scrdb": None,
+                    "shdb": "puppet_2015q3_sortinghat",
+                    "prjdb": None,
+                    "port": 3307}),
+        ("Midokura", {"scmdb": "cp_cvsanaly_midokura",
+                      "scrdb": None,
+                      "shdb": "cp_sortinghat_midokura",
+                      "prjdb": None,
+                      "port": 3307})
     ])
 
     for dashboard, params in dashboards.iteritems():
         logging.info("** Producing data for " + dashboard)
+        if "port" in params:
+            port = params["port"]
+        else:
+            port = args.port
         if elasticsearch:
             elasticsearch[1] = dashboard.lower() + "-scm"
         grimoireng_data.process_all (
             user = args.user, passwd = args.passwd,
-            host = args.host, port = args.port,
+            host = args.host, port = port,
             scmdb = params["scmdb"],
             scrdb = params["scrdb"],
             shdb = params["shdb"],
