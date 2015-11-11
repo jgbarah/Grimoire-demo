@@ -29,8 +29,11 @@
 
 ## python grimoire-ng-data.py --user root --port 3308 --scmdb amartin_cvsanaly_openstack_sh --scrdb amartin_bicho_gerrit_openstack_sh --shdb amartin_sortinghat_openstack_sh --prjdb amartin_projects_openstack_sh --elasticsearch https://789ba13a7edced40de95ef091ac591d3.us-east-1.aws.found.io:9243 openstack --esauth readwrite XXX --verbose
 
+## python grimoire-ng-data.py --user root --port 3307 --scmdb quan_cvsanaly_docker_6753 --allbranches --shdb quan_sortinghat_docker_6753 --elasticsearch https://789ba13a7edced40de95ef091ac591d3.us-east-1.aws.found.io:9243 docker-scm --esauth readwrite XXX --verbose --delete --dashboard Docker
+
 import argparse
 import MySQLdb
+import _mysql_exceptions
 import logging
 import pandas
 from collections import OrderedDict
@@ -66,17 +69,17 @@ def parse_args ():
     parser.add_argument("--port",  type = int, default = 3306,
                         help = "Port to access the databases" + \
                         "(default: 3306, standard MySQL port)")
-    parser.add_argument("--scmdb", required = False,
+    parser.add_argument("--scmdb", required = False, default = None,
                         help = "SCM (git) database")
-    parser.add_argument("--scrdb", required = False,
+    parser.add_argument("--scrdb", required = False, default = None,
                         help = "SCR (Gerrit) database")
-    parser.add_argument("--shdb", required = True,
+    parser.add_argument("--shdb", required = True, default = None,
                         help = "SortingHat database")
-    parser.add_argument("--prjdb", required = False,
+    parser.add_argument("--prjdb", required = False, default = None,
                         help = "Projects database (if not specified, same as SCM database)")
     parser.add_argument("--output", default = "",
                         help = "Output directory")
-    parser.add_argument("--dateformat",
+    parser.add_argument("--dateformat", default = "utime",
                         help = "Date format ('utime' or 'iso')")
     parser.add_argument("--deleteold", action = 'store_true',
                         help = "Delete old contents in output system")
@@ -93,7 +96,7 @@ def parse_args ():
     parser.add_argument("--elasticsearch", nargs=2,
                         help = "Url of elasticsearch, and index to use " + \
                         "(eg: http://localhost:9200 project)")
-    parser.add_argument("--esauth", nargs=2,
+    parser.add_argument("--esauth", nargs=2, default = None,
                         help = "Authentication to access ElasticSearch" + \
                         "(eg: user password)")
     parser.add_argument("--dashboard", required = False, default = "Dashboard",
@@ -865,7 +868,7 @@ GROUP BY repo_id ORDER BY repo_id"""
 sql_commits_repos_noproj = """SELECT repositories.id AS repo_id,
   repositories.name AS repo_name,
   0 AS project_id,
-  "No project" AS project_name
+  "Top level" AS project_name
 FROM {main_db}.repositories
 ORDER BY repo_id"""
 
@@ -976,70 +979,86 @@ def analyze_scm (db, allbranches, since, output, elasticsearch,
                              'mapping': scm_mapping_commit}
     return es_data
 
-if __name__ == "__main__":
+def process_all (user, passwd = "", host = "127.0.0.1", port = 3306,
+                 scmdb = None, scrdb = None, shdb = None, prjdb = None,
+                 allbranches = False, since = None,
+                 output = "", elasticsearch = None, esauth = None,
+                 dateformat = "utime",
+                 dashboard = "Dashboard",
+                 deleteold = False, verbose = False, debug = False):
+    """Process all databases found, and produce results in files or ElasticSearch.
 
-    import _mysql_exceptions
-    
-    args = parse_args()
+    """
 
-    if args.debug:
+    if debug:
         logging.basicConfig(level=logging.DEBUG)
-    elif args.verbose:
+    elif verbose:
         logging.basicConfig(level=logging.INFO)
-    if args.deleteold:
-        deleteold = True
-    else:
-        deleteold = False
-    if args.prjdb:
+    if prjdb:
         logging.info("Using projects database, as specified.")
-        prjdb = args.prjdb
     else:
         logging.info("No projects database specified, using SCM database instead.")
-        prjdb = args.scmdb
-    if args.dateformat:
-        dateformat = args.dateformat
-    else:
-        dateformat = "utime"
+        prjdb = scmdb
 
     # Data to upload to ElasticSearch
     es_data = {}
-    if args.scmdb:
+    if scmdb:
         logging.info("SCM database specified, analyzing it.")
-        db = Database (user = args.user, passwd = args.passwd,
-                       host = args.host, port = args.port,
-                       maindb = args.scmdb, shdb = args.shdb,
+        db = Database (user = user, passwd = passwd,
+                       host = host, port = port,
+                       maindb = scmdb, shdb = shdb,
                        prjdb = prjdb)
         es_scm = analyze_scm(db = db,
-                             allbranches = args.allbranches,
-                             since = args.since,
-                             output = args.output,
-                             elasticsearch = args.elasticsearch,
+                             allbranches = allbranches,
+                             since = since,
+                             output = output,
+                             elasticsearch = elasticsearch,
                              dateformat = dateformat,
-                             dashboard = args.dashboard)
+                             dashboard = dashboard)
         for index, to_upload in es_scm.iteritems():
             es_data[index] = to_upload
-    if args.scrdb:
+    if scrdb:
         logging.info("SCR database specified, analyzing it.")
-        db = Database (user = args.user, passwd = args.passwd,
-                       host = args.host, port = args.port,
-                       maindb = args.scrdb, shdb = args.shdb,
+        db = Database (user = user, passwd = passwd,
+                       host = host, port = port,
+                       maindb = scrdb, shdb = shdb,
                        prjdb = prjdb)
         es_scr = analyze_scr(db = db,
-                             output = args.output,
-                             elasticsearch = args.elasticsearch,
+                             output = output,
+                             elasticsearch = elasticsearch,
                              dateformat = dateformat,
-                             dashboard = args.dashboard)
+                             dashboard = dashboard)
         for index, to_upload in es_scr.iteritems():
             es_data[index] = to_upload
-    if args.elasticsearch:
-        (esurl, esindex) = args.elasticsearch
-        if args.esauth:
-            esauth = args.esauth
-        else:
-            esauth = None
+    if elasticsearch:
+        (esurl, esindex) = elasticsearch
         logging.info("Feeding data to elasticsearch at: " + esurl + "/" + esindex)
         upload_elasticsearch (url = esurl,
                               index = esindex,
                               data = es_data,
                               deleteold = deleteold,
                               auth = esauth)
+
+if __name__ == "__main__":
+    
+    args = parse_args()
+
+
+    process_all (
+        user = args.user, passwd = args.passwd,
+        host = args.host, port = args.port,
+        scmdb = args.scmdb,
+        scrdb = args.scrdb,
+        shdb = args.shdb,
+        prjdb = args.prjdb,
+        allbranches = args.allbranches,
+        since = args.since,
+        output = args.output,
+        elasticsearch = args.elasticsearch,
+        esauth = args.esauth,
+        dateformat = args.dateformat,
+        dashboard = args.dashboard,
+        deleteold = args.deleteold,
+        verbose = args.verbose,
+        debug = args.debug
+    )
