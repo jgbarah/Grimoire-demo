@@ -248,7 +248,8 @@ scm_mapping_commit = """
        "hash":{"type":"string",
                "index":"not_analyzed"},
        "tz":{"type":"long"},
-       "author_uuid":{"type":"string"},
+       "author_uuid":{"type":"string",
+                      "index":"not_analyzed"},
        "author_name":{"type":"string",
                       "index":"not_analyzed"},
        "bot":{"type":"long"},
@@ -296,7 +297,9 @@ scr_mapping_review = """
        "patchsets":{"type":"long"},
        "name":{"type":"string",
                "index":"not_analyzed"},
-       "bot":{"type":"long"}
+       "bot":{"type":"long"},
+       "dashboard":{"type":"string",
+                    "index":"not_analyzed"}
       }
     }
   }
@@ -331,7 +334,9 @@ scr_mapping_event = """
        "patchsets":{"type":"long"},
        "status":{"type":"string",
                  "index":"not_analyzed"},
-       "timeopen":{"type":"long"}
+       "timeopen":{"type":"long"},
+       "dashboard":{"type":"string",
+                    "index":"not_analyzed"}
       }
     }
   }
@@ -718,6 +723,8 @@ def analyze_scr (db, output, elasticsearch, dateformat, dashboard):
     extended_df = pandas.merge (extended_df, times_df, on="id", how="left")
     extended_df = pandas.merge (extended_df, patchsets_df, on="id", how="left")
     extended_df = pandas.merge (extended_df, persons_df, on="uuid", how="left")
+    extended_df["dashboard"] = [dashboard] * len(extended_df.index)
+
     logging.info("Reviews with extended info: " + str(len(extended_df.index)))
     logging.debug("extended_df with NaN: " \
                   + str(extended_df[extended_df.isnull().any(axis=1)]))
@@ -730,6 +737,7 @@ def analyze_scr (db, output, elasticsearch, dateformat, dashboard):
                                                    "patchsets","status",
                                                    "timeopen"]],
                                        on="review", how="left")
+    events_extended_df["dashboard"] = [dashboard] * len(events_extended_df.index)
     logging.info("Events with extended info: " \
                  + str(len(events_extended_df.index)))
     logging.info("events_extended_df with NaN (will be dropped): " \
@@ -898,7 +906,7 @@ def analyze_scm (db, allbranches, since, output, elasticsearch,
     commits_df["org_name"].fillna("Unknown", inplace=True)
     commits_df["author_name"] = commits_df["name"]
     commits_df["name"] = commits_df["name"] + " (" + commits_df["org_name"] + ")"
-    commits_df["dashboard"] = [dashboard] * len(commits_df["name"])
+    commits_df["dashboard"] = [dashboard] * len(commits_df.index)
     # Persons
     persons_df = db.execute_df(sql_commits_persons(allbranches, since),
                                "Persons (authoring commits)")
