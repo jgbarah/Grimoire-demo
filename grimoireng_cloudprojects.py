@@ -111,11 +111,11 @@ if __name__ == "__main__":
                     "shdb": "puppet_2015q3_sortinghat",
                     "prjdb": None,
                     "port": 3307}),
-        ("Midokura", {"scmdb": "cp_cvsanaly_midokura",
-                      "scrdb": None,
-                      "shdb": "cp_sortinghat_midokura",
-                      "prjdb": None,
-                      "port": 3307})
+        ("Midonet", {"scmdb": "cp_cvsanaly_midokura",
+                     "scrdb": None,
+                     "shdb": "cp_sortinghat_midokura",
+                     "prjdb": None,
+                     "port": 3307})
     ])
 
     for dashboard, params in dashboards.iteritems():
