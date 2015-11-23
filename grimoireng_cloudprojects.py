@@ -27,6 +27,7 @@ import grimoireng_data
 import argparse
 from collections import OrderedDict
 import logging
+import sys
 
 description = """
 Produce data for NG dashboards for some cloud projects.
@@ -43,8 +44,8 @@ def parse_args ():
     """
 
     parser = argparse.ArgumentParser(description = description)
-    parser.add_argument("--user", required = True,
-                        help = "User to access the databases")
+    parser.add_argument("--user", default = "root",
+                        help = "User to access the databases (default root)")
     parser.add_argument("--passwd", default = "",
                         help = "Password to access the databases " + \
                         "(default: no password)")
@@ -54,6 +55,12 @@ def parse_args ():
     parser.add_argument("--port",  type = int, default = 3306,
                         help = "Port to access the databases" + \
                         "(default: 3306, standard MySQL port)")
+    parser.add_argument("--dashboards", default = "all",
+                        nargs='+',
+                        help = "Dashboard to generate, according to the " + \
+                        "configuration, 'all' to generate all dashboards (default)")
+    parser.add_argument("--list_dashboards",  action = 'store_true',
+                        help = "List dashboards in configuration (do nothing else)")
     parser.add_argument("--output", default = "",
                         help = "Output directory")
     parser.add_argument("--deleteold", action = 'store_true',
@@ -112,35 +119,86 @@ if __name__ == "__main__":
                     "prjdb": None,
                     "port": 3307}),
         ("Midonet", {"scmdb": "cp_cvsanaly_midokura",
-                     "scrdb": None,
+                     "scrdb": "cp_gerrit_midokura",
                      "shdb": "cp_sortinghat_midokura",
                      "prjdb": None,
-                     "port": 3307})
+                     "port": 3307}),
+        ("OpenStack", {"scmdb": "amartin_cvsanaly_openstack_sh",
+                       "scrdb": "amartin_bicho_gerrit_openstack_sh",
+                       "shdb": "amartin_sortinghat_openstack_sh",
+                       "prjdb": "amartin_projects_openstack_sh",
+                       "port": 3308}),
+        ("MediaWiki", {"scmdb": "acs_cvsanaly_mediawiki_5300",
+                       "scrdb": "dic_gerrit_mediawiki_5829",
+                       "shdb": "acs_sortinghat_mediawiki_5879",
+                       "prjdb": None,
+                       "port": 3308}),
+        ("CloudStack", {"scmdb": "sduenas_cvsanaly_cloudstack_3246",
+                       "scrdb": None,
+                       "shdb": "amartin_sortinghat_cloudstack",
+                       "prjdb": None,
+                       "port": 3308})
     ])
 
-    for dashboard, params in dashboards.iteritems():
+    # List dashbords, if asked to do so
+    if args.list_dashboards:
+        for dashboard in dashboards:
+            print dashboard
+        sys.exit()
+    # Which dashboards should we produce?
+    dashboards_produce = []
+    if "all" in args.dashboards:
+        dashboards_produce = dashboards.iteritems()
+    else:
+        for dashboard in args.dashboards:
+            if dashboard in dashboards:
+                dashboards_produce.append([dashboard, dashboards[dashboard]])
+            else:
+                logging.info("No configuration for " + dashboard \
+                             + ", not producing it")
+    # Go and produce them!!
+    for dashboard, params in dashboards_produce:
         logging.info("** Producing data for " + dashboard)
         if "port" in params:
             port = params["port"]
         else:
             port = args.port
-        if elasticsearch:
-            elasticsearch[1] = dashboard.lower() + "-scm"
-        grimoireng_data.process_all (
-            user = args.user, passwd = args.passwd,
-            host = args.host, port = port,
-            scmdb = params["scmdb"],
-            scrdb = params["scrdb"],
-            shdb = params["shdb"],
-            prjdb = params["prjdb"],
-            allbranches = allbranches,
-            since = args.since,
-            output = args.output,
-            elasticsearch = elasticsearch,
-            esauth = args.esauth,
-            dateformat = dateformat,
-            dashboard = dashboard,
-            deleteold = args.deleteold,
-            verbose = args.verbose,
-            debug = args.debug
-        )
+        if params["scmdb"]:
+            if elasticsearch:
+                elasticsearch[1] = dashboard.lower() + "-scm"
+            grimoireng_data.process_all (
+                user = args.user, passwd = args.passwd,
+                host = args.host, port = port,
+                scmdb = params["scmdb"],
+                shdb = params["shdb"],
+                prjdb = params["prjdb"],
+                allbranches = allbranches,
+                since = args.since,
+                output = args.output,
+                elasticsearch = elasticsearch,
+                esauth = args.esauth,
+                dateformat = dateformat,
+                dashboard = dashboard,
+                deleteold = args.deleteold,
+                verbose = args.verbose,
+                debug = args.debug
+            )
+        if params["scrdb"]:
+            if elasticsearch:
+                elasticsearch[1] = dashboard.lower() + "-scr"
+            grimoireng_data.process_all (
+                user = args.user, passwd = args.passwd,
+                host = args.host, port = port,
+                scrdb = params["scrdb"],
+                shdb = params["shdb"],
+                prjdb = params["prjdb"],
+                since = args.since,
+                output = args.output,
+                elasticsearch = elasticsearch,
+                esauth = args.esauth,
+                dateformat = dateformat,
+                dashboard = dashboard,
+                deleteold = args.deleteold,
+                verbose = args.verbose,
+                debug = args.debug
+            )
