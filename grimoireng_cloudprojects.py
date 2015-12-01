@@ -97,6 +97,8 @@ if __name__ == "__main__":
         "https://789ba13a7edced40de95ef091ac591d3.us-east-1.aws.found.io:9243",
         "scm"
         ]
+    # spectrum: 3307
+    # atari: 3308
     dashboards = OrderedDict ([
         ("ElasticSearch", {"scmdb": "quan_cvsanaly_elastic_6863",
                            "scrdb": None,
@@ -137,7 +139,17 @@ if __name__ == "__main__":
                        "scrdb": None,
                        "shdb": "amartin_sortinghat_cloudstack",
                        "prjdb": None,
-                       "port": 3308})
+                       "port": 3308}),
+        ("OPNFV", {"scmdb": "dpose_cvsanaly_linux_foundation_6219_and_6222",
+                   "scrdb": "dpose_gerrit_linux_foundation_6219_and_6222",
+                   "shdb": "dpose_sortinghat_linux_foundation_6219_and_6222",
+                   "prjdb": None,
+                   "port": 3307}),
+        ("Eclipse", {"scmdb": "cp_cvsanaly_Eclipse_5986",
+                     "scrdb": "cp_gerrit_Eclipse_5467",
+                     "shdb": "cp_sortinghat_Eclipse_5680",
+                     "prjdb": "cp_projects_Eclipse_5680",
+                     "port": 3307})
     ])
 
     # List dashbords, if asked to do so
