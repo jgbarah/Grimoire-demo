@@ -24,6 +24,7 @@
 ## python grimoireng_cloudprojects.py --user root --port 3307 --esauth readwrite XXX --verbose --delete
 
 import grimoireng_data
+import grimoireng_config as config
 import argparse
 from collections import OrderedDict
 import logging
@@ -92,66 +93,9 @@ if __name__ == "__main__":
     logging.info("Starting...")
     allbranches = True
     dateformat = "utime"
-    # elasticsearch = None 
-    elasticsearch = [
-        "https://789ba13a7edced40de95ef091ac591d3.us-east-1.aws.found.io:9243",
-        "scm"
-        ]
-    # spectrum: 3307
-    # atari: 3308
-    dashboards = OrderedDict ([
-        ("ElasticSearch", {"scmdb": "quan_cvsanaly_elastic_6863",
-                           "scrdb": None,
-                           "shdb": "quan_sortinghat_elastic_6863",
-                           "prjdb": None,
-                           "port": 3307}),
-        ("Kubernetes", {"scmdb": "lcanas_cvsanaly_kubernetes_oscon2015",
-                        "scrdb": None,
-                        "shdb": "lcanas_sortinghat_kubernetes_oscon2015",
-                        "prjdb": None,
-                        "port": 3307}),
-        ("Docker", {"scmdb": "quan_cvsanaly_docker_6753",
-                    "scrdb": None,
-                    "shdb": "quan_sortinghat_docker_6753",
-                    "prjdb": None,
-                    "port": 3307}),
-        ("Puppet", {"scmdb": "puppet_2015q3_cvsanaly",
-                    "scrdb": None,
-                    "shdb": "puppet_2015q3_sortinghat",
-                    "prjdb": None,
-                    "port": 3307}),
-        ("Midonet", {"scmdb": "cp_cvsanaly_midokura",
-                     "scrdb": "cp_gerrit_midokura",
-                     "shdb": "cp_sortinghat_midokura",
-                     "prjdb": None,
-                     "port": 3307}),
-        ("OpenStack", {"scmdb": "amartin_cvsanaly_openstack_sh",
-                       "scrdb": "amartin_bicho_gerrit_openstack_sh",
-                       "shdb": "amartin_sortinghat_openstack_sh",
-                       "prjdb": "amartin_projects_openstack_sh",
-                       "port": 3308}),
-        ("MediaWiki", {"scmdb": "acs_cvsanaly_mediawiki_5300",
-                       "scrdb": "dic_gerrit_mediawiki_5829",
-                       "shdb": "acs_sortinghat_mediawiki_5879",
-                       "prjdb": None,
-                       "port": 3308}),
-        ("CloudStack", {"scmdb": "sduenas_cvsanaly_cloudstack_3246",
-                       "scrdb": None,
-                       "shdb": "amartin_sortinghat_cloudstack",
-                       "prjdb": None,
-                       "port": 3308}),
-        ("OPNFV", {"scmdb": "dpose_cvsanaly_linux_foundation_6219_and_6222",
-                   "scrdb": "dpose_gerrit_linux_foundation_6219_and_6222",
-                   "shdb": "dpose_sortinghat_linux_foundation_6219_and_6222",
-                   "prjdb": None,
-                   "port": 3307}),
-        ("Eclipse", {"scmdb": "cp_cvsanaly_Eclipse_5986",
-                     "scrdb": "cp_gerrit_Eclipse_5467",
-                     "shdb": "cp_sortinghat_Eclipse_5680",
-                     "prjdb": "cp_projects_Eclipse_5680",
-                     "port": 3307})
-    ])
-
+    elasticsearch = config elasticsearch
+    dashboards = config.dashboards
+    
     # List dashbords, if asked to do so
     if args.list_dashboards:
         for dashboard in dashboards:
