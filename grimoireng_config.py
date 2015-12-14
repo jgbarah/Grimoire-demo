@@ -2,6 +2,8 @@
 # -*- coding: utf-8 -*-
 # Configuration file for grimoireng_cloud.py
 
+from collections import OrderedDict
+
 # elasticsearch = None 
 elasticsearch = [
     "https://789ba13a7edced40de95ef091ac591d3.us-east-1.aws.found.io:9243",

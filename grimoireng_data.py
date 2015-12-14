@@ -99,6 +99,9 @@ def parse_args ():
     parser.add_argument("--esauth", nargs=2, default = None,
                         help = "Authentication to access ElasticSearch" + \
                         "(eg: user password)")
+    parser.add_argument("--batchsize",  type = int, default = 10000,
+                        help = "Size of batches for uploading data" + \
+                        "(default: 10,000 items)")
     parser.add_argument("--dashboard", required = False, default = "Dashboard",
                         help = "Dashboard name (default: 'Dashboard'")
     
@@ -412,7 +415,8 @@ def http_put (url, body, auth):
         raise
 
 
-def es_put_bulk (url, index, type, data, id, mapping = None, auth = None):
+def es_put_bulk (url, index, type, data, id, mapping = None, auth = None,
+                 batchsize = 10000):
     """Use HTTP PUT, via bulk API, to upload documents to Elasticsearch.
 
     Uploads a dataframe, assuming each row is a document, to the specified
@@ -432,6 +436,8 @@ def es_put_bulk (url, index, type, data, id, mapping = None, auth = None):
     :type mapping: str
     :param auth: authentication data (list with user and password)
     :type auth: list of str
+    :param batchsize: size of batches to upload (in number of items)
+    :type batchsize: int
 
     """
 
@@ -454,7 +460,7 @@ def es_put_bulk (url, index, type, data, id, mapping = None, auth = None):
                                              dateformat = "iso") + '\n'
         batch = batch + batch_item
         batch_pos = batch_pos + 1
-        if batch_pos % 10000 == 0:
+        if batch_pos % batchsize == 0:
             logging.info("PUT to " + url + " " + index + "/" + type \
                 + " (batch no: " + str(batch_count) \
                          + ", " + str(batch_pos) + " items, " \
@@ -470,7 +476,7 @@ def es_put_bulk (url, index, type, data, id, mapping = None, auth = None):
         http_put (url + "/_bulk", batch, auth = auth)
 
   
-def upload_elasticsearch (url, index, data, deleteold, auth):
+def upload_elasticsearch (url, index, data, deleteold, auth, batchsize):
     """Upload reviews data (dataframe) to elasticsearch in url.
 
     The data to upload is a dictionary, with ElasticSearch types as keys,
@@ -487,6 +493,8 @@ def upload_elasticsearch (url, index, data, deleteold, auth):
     :type dedleteold: bool
     :param auth: authentication data (list with user and password)
     :type auth: list of str
+    :param batchsize: size of batches to upload (in number of items)
+    :type batchsize: int
 
     """
 
@@ -506,7 +514,7 @@ def upload_elasticsearch (url, index, data, deleteold, auth):
         es_put_bulk (url = url, index = index, type = type,
                      data = to_upload['df'], id = to_upload['id'],
                      mapping = to_upload['mapping'],
-                     auth = auth)
+                     auth = auth, batchsize = batchsize)
 
 class Database:
     """To work with a database (likely including several schemas).
@@ -991,6 +999,7 @@ def process_all (user, passwd = "", host = "127.0.0.1", port = 3306,
                  scmdb = None, scrdb = None, shdb = None, prjdb = None,
                  allbranches = False, since = None,
                  output = "", elasticsearch = None, esauth = None,
+                 batchsize = 10000,
                  dateformat = "utime",
                  dashboard = "Dashboard",
                  deleteold = False, verbose = False, debug = False):
@@ -1045,7 +1054,8 @@ def process_all (user, passwd = "", host = "127.0.0.1", port = 3306,
                               index = esindex,
                               data = es_data,
                               deleteold = deleteold,
-                              auth = esauth)
+                              auth = esauth,
+                              batchsize = batchsize)
 
 if __name__ == "__main__":
     
@@ -1064,6 +1074,7 @@ if __name__ == "__main__":
         output = args.output,
         elasticsearch = args.elasticsearch,
         esauth = args.esauth,
+        batchsize = args.batchsize,
         dateformat = args.dateformat,
         dashboard = args.dashboard,
         deleteold = args.deleteold,

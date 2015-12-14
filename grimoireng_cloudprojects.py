@@ -24,11 +24,10 @@
 ## python grimoireng_cloudprojects.py --user root --port 3307 --esauth readwrite XXX --verbose --delete
 
 import grimoireng_data
-import grimoireng_config as config
 import argparse
-from collections import OrderedDict
 import logging
 import sys
+import imp
 
 description = """
 Produce data for NG dashboards for some cloud projects.
@@ -76,6 +75,11 @@ def parse_args ():
     parser.add_argument("--esauth", nargs=2, default = None,
                         help = "Authentication to access ElasticSearch" + \
                         "(eg: user password)")
+    parser.add_argument("--batchsize",  type = int, default = 10000,
+                        help = "Size of batches for uploading data" + \
+                        "(default: 10,000 items)")
+    parser.add_argument("--config", default = "grimoireng_config.py",
+                        help = "Configuration file")
     
     args = parser.parse_args()
     return args
@@ -90,10 +94,14 @@ if __name__ == "__main__":
     elif args.verbose:
         logging.basicConfig(level=logging.INFO)
 
+    logging.info("Reading config from " + args.config)
+    # importlib.import_module(args.config) as config
+    config = imp.load_source("config", args.config)
+
     logging.info("Starting...")
     allbranches = True
     dateformat = "utime"
-    elasticsearch = config elasticsearch
+    elasticsearch = config.elasticsearch
     dashboards = config.dashboards
     
     # List dashbords, if asked to do so
@@ -135,6 +143,7 @@ if __name__ == "__main__":
                 esauth = args.esauth,
                 dateformat = dateformat,
                 dashboard = dashboard,
+                batchsize = args.batchsize,
                 deleteold = args.deleteold,
                 verbose = args.verbose,
                 debug = args.debug
@@ -154,6 +163,7 @@ if __name__ == "__main__":
                 esauth = args.esauth,
                 dateformat = dateformat,
                 dashboard = dashboard,
+                batchsize = args.batchsize,
                 deleteold = args.deleteold,
                 verbose = args.verbose,
                 debug = args.debug
