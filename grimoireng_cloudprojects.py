@@ -20,8 +20,11 @@
 ## Authors:
 ##   Jesus M. Gonzalez-Barahona <jgb@bitergia.com>
 ##
-## Example:
-## python grimoireng_cloudprojects.py --user root --port 3307 --esauth readwrite XXX --verbose --delete
+## Examples:
+## python grimoireng_cloudprojects.py --user root --port 3307 \
+##   --esauth readwrite XXX --verbose --delete
+## python grimoireng_cloudprojects.py --user root --esauth readwrite XXX \
+##  --verbose --delete --dashboards FirefoxOS --config config.py
 
 import grimoireng_data
 import argparse
@@ -80,13 +83,13 @@ def parse_args ():
                         "(default: 10,000 items)")
     parser.add_argument("--config", default = "grimoireng_config.py",
                         help = "Configuration file")
-    
+
     args = parser.parse_args()
     return args
 
 
 if __name__ == "__main__":
-    
+
     args = parse_args()
 
     if args.debug:
@@ -103,7 +106,7 @@ if __name__ == "__main__":
     dateformat = "utime"
     elasticsearch = config.elasticsearch
     dashboards = config.dashboards
-    
+
     # List dashbords, if asked to do so
     if args.list_dashboards:
         for dashboard in dashboards:
