@@ -104,7 +104,7 @@ def parse_args ():
                         "(default: 10,000 items)")
     parser.add_argument("--dashboard", required = False, default = "Dashboard",
                         help = "Dashboard name (default: 'Dashboard'")
-    
+
     args = parser.parse_args()
     return args
 
@@ -151,7 +151,7 @@ def json_serial_utime (obj):
 
     return json_serial (obj, dateformat = "utime")
 
-    
+
 def json_dumps(data, compact = True, dateformat = "iso"):
     """Dumps data to a JSON string.
 
@@ -176,7 +176,7 @@ def json_dumps(data, compact = True, dateformat = "iso"):
                           separators=(',',':'),
                           default=serializer)
     else:
-        return json.dumps(data, sort_keys=False, 
+        return json.dumps(data, sort_keys=False,
                           indent=4, separators=(',', ': '),
                           default=serializer)
 
@@ -256,6 +256,8 @@ scm_mapping_commit = """
        "author_name":{"type":"string",
                       "index":"not_analyzed"},
        "bot":{"type":"long"},
+       "added":{"type":"long"},
+       "deleted":{"type":"long"},
        "org_id":{"type":"long"},
        "org_name":{"type":"string",
                    "index":"not_analyzed"},
@@ -264,6 +266,8 @@ scm_mapping_commit = """
                     "index":"not_analyzed"},
        "project_id":{"type":"long"},
        "project_name":{"type":"string",
+                       "index":"not_analyzed"},
+       "branch_name":{"type":"string",
                        "index":"not_analyzed"},
        "dashboard":{"type":"string",
                     "index":"not_analyzed"}
@@ -429,7 +433,7 @@ def es_put_bulk (url, index, type, data, id, mapping = None, auth = None,
     :param type: type name
     :type type: str
     :param data: dataframe to upload to elasticsearch
-    :type data: pandas.dataframe 
+    :type data: pandas.dataframe
     :param id: dataframe field to use as document id
     :type id: str
     :param mapping: mapping JSON for index
@@ -475,7 +479,7 @@ def es_put_bulk (url, index, type, data, id, mapping = None, auth = None,
             + ", " + str(batch_pos) + " items).")
         http_put (url + "/_bulk", batch, auth = auth)
 
-  
+
 def upload_elasticsearch (url, index, data, deleteold, auth, batchsize):
     """Upload reviews data (dataframe) to elasticsearch in url.
 
@@ -519,7 +523,7 @@ def upload_elasticsearch (url, index, data, deleteold, auth, batchsize):
 class Database:
     """To work with a database (likely including several schemas).
     """
-    
+
     def __init__ (self, user, passwd, host, port, maindb, shdb, prjdb):
         """Init state.
 
@@ -537,9 +541,9 @@ class Database:
         :type shdb: str or unicode
         :param prjdb: projects database schema name
         :type prjdb: str or unicode
-        
+
         """
-        
+
         self.user = user
         self.passwd = passwd
         self.host = host
@@ -630,7 +634,7 @@ FROM {main_db}.issues_ext_gerrit
 sql_reviews_opened = """SELECT issue_id AS id,
   MAX(changed_on) AS opened
 FROM {main_db}.changes
-WHERE (field='status' AND new_value='UPLOADED' AND old_value=1) OR 
+WHERE (field='status' AND new_value='UPLOADED' AND old_value=1) OR
   (field='Upload')
 GROUP BY issue_id
 """
@@ -664,13 +668,13 @@ FROM {main_db}.issues
 
 sql_reviews_events = """SELECT c.id AS id,
   i.issue AS review,
-  pup.uuid AS uuid, 
+  pup.uuid AS uuid,
   c.field AS field,
   c.old_value AS patchset,
   c.new_value AS tag,
   c.changed_on AS event_date
 FROM {main_db}.changes c
-  JOIN {main_db}.issues i ON i.id = c.issue_id 
+  JOIN {main_db}.issues i ON i.id = c.issue_id
   JOIN {main_db}.people_uidentities pup ON c.changed_by = pup.people_id
 WHERE field <> 'Upload'
 ORDER BY review, patchset, event_date
@@ -697,7 +701,7 @@ def query_review_retrieval (db):
     sql = """SELECT MAX(retrieved_on) as date
 FROM {main_db}.trackers
 """
-    
+
     (date, fields) = db.execute(sql)
     return date[0][0]
 
@@ -766,7 +770,7 @@ def analyze_scr (db, output, elasticsearch, dateformat, dashboard):
         es_data['event'] = {'df': events_extended_df, 'id': 'id',
                              'mapping': scr_mapping_event}
     return es_data
-        
+
 def sql_commits_persons (allbranches, since):
     """ Execute query to select persons."""
 
@@ -786,7 +790,7 @@ FROM {main_db}.scmlog
     where = False
     if not allbranches:
         sql = sql + """JOIN {main_db}.branches
-    ON branches.id = actions.branch_id 
+    ON branches.id = actions.branch_id
 WHERE branches.name IN ("master")
 """
         where = True
@@ -801,7 +805,7 @@ WHERE branches.name IN ("master")
 def sql_commits (allbranches, since):
     """Produce SQL query to select commits."""
 
-    sql = """SELECT scmlog.id AS id, 
+    sql = """SELECT scmlog.id AS id,
   scmlog.author_date AS date,
   scmlog.date AS commit_date,
   uidentities.uuid AS author_uuid,
@@ -815,7 +819,8 @@ def sql_commits (allbranches, since):
   DATE_SUB(scmlog.author_date, INTERVAL scmlog.author_date_tz SECOND)
     AS utc_author,
   DATE_SUB(scmlog.date, INTERVAL scmlog.date_tz SECOND) AS utc_commit,
-  organizations.name AS org_name
+  organizations.name AS org_name,
+  branches.name AS branch_name
 FROM {main_db}.scmlog
   JOIN {main_db}.people_uidentities
     ON people_uidentities.people_id = scmlog.author_id
@@ -845,6 +850,33 @@ GROUP BY scmlog.rev ORDER BY scmlog.author_date
 """
     return sql
 
+def sql_lines (allbranches, since):
+    """Produce SQL query to select lines per commit.
+
+    """
+
+    sql = """SELECT commits_lines.commit_id AS id,
+  commits_lines.added AS added,
+  commits_lines.removed AS removed
+FROM {main_db}.commits_lines
+  JOIN {main_db}.scmlog
+    ON commits_lines.commit_id = scmlog.id
+  JOIN {main_db}.actions
+    ON scmlog.id = actions.commit_id
+  JOIN {main_db}.branches
+    ON branches.id = actions.branch_id
+"""
+    if (not allbranches) or since:
+        sql = sql + "WHERE "
+    if not allbranches:
+        sql = sql + 'WHERE branches.name IN ("master") '
+    if (not allbranches) and since:
+        sql = sql + "AND "
+    if since:
+        sql = sql + 'scmlog.author_date >= "' + since + '" '
+    sql = sql + "GROUP BY scmlog.rev ORDER BY scmlog.author_date"
+    return sql
+
 # Query to select organizations
 sql_commits_orgs = """SELECT enrollments.organization_id AS org_id,
   {sh_db}.organizations.name AS org_name
@@ -860,7 +892,7 @@ FROM {main_db}.scmlog
   JOIN {main_db}.actions
     ON scmlog.id = actions.commit_id
   JOIN {main_db}.branches
-    ON branches.id = actions.branch_id 
+    ON branches.id = actions.branch_id
 WHERE enrollments.start IS NULL OR
   (scmlog.date > enrollments.start AND scmlog.date < enrollments.end)
 GROUP BY org_id"""
@@ -893,7 +925,7 @@ def analyze_scm (db, allbranches, since, output, elasticsearch,
     """Analyze SCM database.
 
     """
-    
+
     if allbranches:
         logging.info("Analyzing comits in git master branch, " \
                      + "landed in all branches.")
@@ -905,6 +937,9 @@ def analyze_scm (db, allbranches, since, output, elasticsearch,
     else:
         logging.info("Analyzing since the first commit.")
 
+    # Lines per commit
+    lines_df = db.execute_df(sql_lines(allbranches, since),
+                               "Lines per commit")
     # Commits
     commits_df = db.execute_df(sql_commits(allbranches, since),
                                "Commits")
@@ -971,7 +1006,10 @@ def analyze_scm (db, allbranches, since, output, elasticsearch,
     if elasticsearch:
         (esurl, esindex) = elasticsearch
         # Produce comprehensive commits dataframe
-        commits_comp_df = pandas.merge (commits_df, repos_df,
+        commits_comp_df = pandas.merge (commits_df, lines_df,
+                                        left_on="id", right_on="id",
+                                        how="left")
+        commits_comp_df = pandas.merge (commits_comp_df, repos_df,
                                         left_on="repo_id", right_on="repo_id",
                                         how="left")
         commits_comp_df = pandas.merge (commits_comp_df, persons_df,
@@ -981,14 +1019,16 @@ def analyze_scm (db, allbranches, since, output, elasticsearch,
             commits_comp_df [['id_x', 'date', 'commit_date',
                               'utc_author', 'utc_commit', 'message', 'hash', 'tz',
                               'author_uuid', 'author_name', 'bot',
+                              'added', 'removed',
                               'org_id', 'org_name', 'repo_id', 'repo_name',
-                              'project_id', 'project_name', 'dashboard']]
+                              'project_id', 'project_name', 'branch_name', 'dashboard']]
         commits_comp_df.columns = [['id', 'author_date', 'commit_date',
                                     'utc_author', 'utc_commit',
                                     'message', 'hash', 'tz',
-                                    'author_uuid', 'author_name', 'bot', 
+                                    'author_uuid', 'author_name', 'bot',
+                                    'added', 'removed',
                                     'org_id', 'org_name', 'repo_id', 'repo_name',
-                                    'project_id', 'project_name', 'dashboard']]
+                                    'project_id', 'project_name', 'branch_name', 'dashboard']]
         es_data['repo'] = {'df': repos_df, 'id': 'repo_id',
                            'mapping': scm_mapping_repo}
         es_data['commit'] = {'df': commits_comp_df, 'id': 'id',
@@ -1058,7 +1098,7 @@ def process_all (user, passwd = "", host = "127.0.0.1", port = 3306,
                               batchsize = batchsize)
 
 if __name__ == "__main__":
-    
+
     args = parse_args()
 
 
