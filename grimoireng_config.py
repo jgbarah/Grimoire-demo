@@ -41,7 +41,7 @@ dashboards = OrderedDict ([
     ("OpenStack", {"scmdb": "amartin_cvsanaly_openstack_sh",
                    "scrdb": "amartin_bicho_gerrit_openstack_sh",
                    "shdb": "amartin_sortinghat_openstack_sh",
-                   "prjdb": "amartin_projects_openstack_sh",
+                   "prjdb": "amartin_projects_openstack_sh_2",
                    "port": PortAtari}),
     ("MediaWiki", {"scmdb": "acs_cvsanaly_mediawiki_5300",
                    "scrdb": "dic_gerrit_mediawiki_5829",
