@@ -728,7 +728,9 @@ def analyze_scr (db, output, elasticsearch, dateformat, dashboard):
     logging.debug("Merging into extended reviews dataframe.")
     times_df = pandas.merge (opened_df, closed_df, on="id", how="left")
     times_df["closed"].fillna(retrieval_date, inplace=True)
-    times_df["timeopen"] = ((times_df["closed"] - times_df["opened"]) * 1.0) / (3600 * 24)
+#    times_df["timeopen"] = (times_df["closed"] - times_df["opened"]) / (3600 * 24)
+    times_df["timeopen"] = times_df["closed"] - times_df["opened"]
+    times_df["timeopen"] = times_df["timeopen"].total_seconds() / (3600 * 24.0)
     logging.info("Reviews with timing: " + str(len(times_df.index)))
 
     extended_df = pandas.merge (reviews_df, extra_df, on="id", how="left")
